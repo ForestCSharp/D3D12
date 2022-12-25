@@ -66,6 +66,7 @@ public:
 	bool IsValid() { return m_resource != nullptr && m_resource_desc.Width > 0; }
 	ID3D12Resource* GetResource() const { return m_resource.Get(); }
 	size_t GetSize() const { return m_resource_desc.Width; }
+	DXGI_FORMAT GetFormat() const { return m_resource_desc.Format; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GetResource()->GetGPUVirtualAddress(); }
 
 	void Map(void** ppData)
@@ -151,6 +152,7 @@ public:
 
 	bool IsValid() { return m_resource != nullptr; }
 	ID3D12Resource* GetResource() const { return m_resource.Get(); }
+	DXGI_FORMAT GetFormat() const { return m_resource_desc.Format; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GetResource()->GetGPUVirtualAddress(); }
 protected:
 	D3D12_RESOURCE_DESC m_resource_desc = {};

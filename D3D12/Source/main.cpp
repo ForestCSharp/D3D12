@@ -345,8 +345,10 @@ int main()
 			break;
 		}
 	}
+	assert(device.Get() && adapter.Get());
 
 	D3D12MA::ALLOCATOR_DESC allocator_desc = {};
+	allocator_desc.Flags = D3D12MA::ALLOCATOR_FLAG_NONE;
 	allocator_desc.pDevice = device.Get();
 	allocator_desc.pAdapter = adapter.Get();
 
@@ -452,7 +454,7 @@ int main()
 		.size = index_buffer_size,
 		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
+		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ | D3D12_RESOURCE_STATE_INDEX_BUFFER
 	});
 	index_buffer.Write(mesh_indices, index_buffer_size);
 
@@ -1001,7 +1003,7 @@ int main()
 
 	wait_gpu_idle(device, command_queue);
 
-	Vector3 cam_pos = Vector3(0, 0, -1);
+	Vector3 cam_pos = Vector3(0, 0, -5);
 	Vector3 cam_up = Vector3(0, 1, 0);
 	Vector3 cam_forward = Vector3(0, 0, 1);
 
@@ -1096,7 +1098,7 @@ int main()
 
 		// Basic Fly-Camera
 		{
-			float move_speed = 5.0f; //TODO: delta_time
+			float move_speed = 0.5f; //TODO: delta_time
 			if (IsKeyPressed(VK_SHIFT)) { move_speed *= 10.0f; }
 
 			const Vector3 cam_right = Cross(cam_forward, cam_up);
@@ -1126,7 +1128,7 @@ int main()
 
 			float fieldOfView = 3.14159f / 4.0f; //PI / 4 : 90 degrees
 			float aspectRatio = (float) width / (float) height;
-			const Matrix proj = Matrix::CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, 0.0001f, 10000.0f);
+			const Matrix proj = Matrix::CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, 0.01f, 10000.0f);
 			scene_constant_buffer_data.projection = proj;
 			scene_constant_buffer_data.projection_inverse = proj.Invert();
 		}
@@ -1165,18 +1167,6 @@ int main()
 					.command_list = command_list,
 				});
 
-				//FCS TODO: isn't living long enough
-				ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
-					.with_root_signature(global_root_signature)
-					.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
-					.with_ps(CompilePixelShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodePixelShader"))
-					.with_depth_enabled(true)
-					.with_dsv_format(DXGI_FORMAT_D32_FLOAT)
-					.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
-					.with_rtv_formats({ DXGI_FORMAT_R8G8B8A8_UNORM_SRGB })
-					.with_debug_name(L"first_node_pipeline_state")
-				.build(device);
-
 				const DXGI_FORMAT color_format = DXGI_FORMAT_R8G8B8A8_UNORM;
 				const D3D12_CLEAR_VALUE clear_color =
 				{
@@ -1188,12 +1178,24 @@ int main()
 				const D3D12_CLEAR_VALUE clear_depth =
 				{
 					.Format = depth_format,
-					.DepthStencil = 
+					.DepthStencil =
 					{
 						.Depth = 1.0f,
 						.Stencil = 0,
 					},
 				};
+
+				//FCS TODO: isn't living long enough
+				ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
+					.with_root_signature(global_root_signature)
+					.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
+					.with_ps(CompilePixelShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodePixelShader"))
+					.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
+					.with_depth_enabled(true)
+					.with_dsv_format(depth_format)
+					.with_rtv_formats({ color_format })
+					.with_debug_name(L"first_node_pipeline_state")
+				.build(device);
 
 				//Add some nodes
 				render_graph.AddNode(RenderGraphNodeDesc
@@ -1223,10 +1225,10 @@ int main()
 					},
 					.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
 					{
+						command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
 						command_list->SetGraphicsRootSignature(global_root_signature.Get());
 						command_list->SetPipelineState(first_node_pipeline_state.Get());
 
-						command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
 						command_list->SetGraphicsRootDescriptorTable(0, bindless_resource_manager.GetGpuHandle());
 						command_list->SetGraphicsRootConstantBufferView(1, scene_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
 
@@ -1240,7 +1242,45 @@ int main()
 						command_list->ClearDepthStencilView(depth_handle, D3D12_CLEAR_FLAG_DEPTH, clear_depth.DepthStencil.Depth, 0, 0, nullptr);
 						command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-						//TODO: Draw Meshes
+						D3D12_VIEWPORT viewport =
+						{
+							.TopLeftX = 0.0f,
+							.TopLeftY = 0.0f,
+							.Width = static_cast<FLOAT>(width),
+							.Height = static_cast<FLOAT>(height),
+							.MinDepth = 0.0f,
+							.MaxDepth = 1.0f,
+						};
+						command_list->RSSetViewports(1, &viewport);
+
+						const D3D12_RECT scissor =
+						{
+							.left = 0,
+							.top = 0,
+							.right = (LONG) width,
+							.bottom = (LONG) height,
+						};
+						command_list->RSSetScissorRects(1, &scissor);
+
+						//TODO: Draw Meshes (Use GPU Scene)
+
+						D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view =
+						{
+							.BufferLocation = vertex_buffer.GetGPUVirtualAddress(),
+							.SizeInBytes = (UINT)vertex_buffer.GetSize(),
+							.StrideInBytes = sizeof(Vertex),
+						};
+						command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
+
+						D3D12_INDEX_BUFFER_VIEW index_buffer_view =
+						{
+							.BufferLocation = index_buffer.GetGPUVirtualAddress(),
+							.SizeInBytes = (UINT) index_buffer.GetSize(),
+							.Format = DXGI_FORMAT_R32_UINT,
+						};
+						command_list->IASetIndexBuffer(&index_buffer_view);
+
+						command_list->DrawIndexedInstanced(num_indices, 1, 0, 0, 0);
 					},
 				});
 
@@ -1284,7 +1324,7 @@ int main()
 					},
 				});
 
-				//Add connections
+				// Add connection
 				render_graph.AddEdge(RenderGraphEdge
 				{
 					.incoming_node = "first_node",
@@ -1293,6 +1333,7 @@ int main()
 					.outgoing_resource = "input",
 				});
 
+				// Add connection with no resources
 				render_graph.AddEdge(RenderGraphEdge
 				{
 					.incoming_node = "copy_to_backbuffer",
@@ -1301,6 +1342,7 @@ int main()
 					.outgoing_resource = STL_IMPL::nullopt,
 				});
 
+				// Execute the render graph
 				render_graph.Execute();
 
 				//FCS TODO: Pipeline isn't living long enough.

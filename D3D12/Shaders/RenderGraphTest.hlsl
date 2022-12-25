@@ -1,26 +1,50 @@
 
+#include "Shaders/HLSL_Types.h"
+
 struct PsInput
 {
     float4 position : SV_POSITION;
-    float2 uv : TEXCOORD0;
+    float3 normal : NORMAL;
+    float3 color : COLOR;
 };
 
-PsInput FirstNodeVertexShader(const float2 position : POSITION, const  float2 uv : TEXCOORD0)
+ConstantBuffer<SceneConstantBuffer> scene_constant_buffer : register(b0, space1);
+
+//For testing
+
+static matrix identity =
 {
+    { 1, 0, 0, 0 },
+    { 0, 1, 0, 0 },
+    { 0, 0, 1, 0 },
+    { 0, 0, 0, 1 }
+};
+
+float4x4 m_translate(float x, float y, float z)
+{
+    float4x4 m = identity;
+    m[0][3] = x;
+    m[1][3] = y;
+    m[2][3] = z;
+    return m;
+}
+
+PsInput FirstNodeVertexShader(const float3 position : SV_POSITION, const float3 normal : NORMAL, const float3 color : COLOR)
+{
+    //const float4x4 model_mat = m_translate(0, 0, 2);
+    //float4 world_pos = mul(model_mat, float4(position, 1));
+
+    const float4x4 proj_view = mul(scene_constant_buffer.projection, scene_constant_buffer.view);
+    float4 out_position = mul(proj_view, float4(position, 1));
+
     PsInput ps_input;
-    ps_input.position = float4(position, 0, 1);
-    ps_input.uv = uv;
+    ps_input.position = out_position;
+    ps_input.normal = normal;
+    ps_input.color = color;
     return ps_input;
 }
 
 float4 FirstNodePixelShader(const PsInput input) : SV_TARGET
 {
-    float4 dummy = float4(0.5, 0.5, 0.5, 1.0);
-    return dummy;
-}
-
-[numthreads(1, 1, 1)]
-void SecondNodeComputeShader()
-{
-
+    return float4(input.color, 1);
 }

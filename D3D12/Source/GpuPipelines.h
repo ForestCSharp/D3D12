@@ -48,7 +48,7 @@ struct GraphicsPipelineBuilder
 		pso_desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
 		pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-		pso_desc.DepthStencilState.DepthEnable = TRUE;
+		pso_desc.DepthStencilState.DepthEnable = FALSE;
 		pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
 		pso_desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 		pso_desc.DepthStencilState.StencilEnable = FALSE;
@@ -73,7 +73,6 @@ struct GraphicsPipelineBuilder
 		pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 
 		pso_desc.SampleDesc.Count = 1;
-		// pso_desc.SampleDesc.Quality = 0;
 	}
 
 	GraphicsPipelineBuilder& with_root_signature(const ComPtr<ID3D12RootSignature> in_root_signature)

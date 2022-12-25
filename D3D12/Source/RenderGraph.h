@@ -374,27 +374,23 @@ struct RenderGraph
 
 	void Execute();
 
-	inline unordered_map<string, RenderGraphNode>& GetNodes()
-	{
-		return nodes;
-	}
+	inline unordered_map<string, RenderGraphNode>& GetNodes() { return nodes; }
 
-	inline multimap<string, RenderGraphEdge>& GetIncomingEdges()
-	{
-		return incoming_edges;
-	}
+	inline multimap<string, RenderGraphEdge>& GetIncomingEdges() { return incoming_edges; }
 
 private:
-	ComPtr<ID3D12Device5> m_device;
-	ComPtr<D3D12MA::Allocator> m_allocator;
-	ComPtr<ID3D12GraphicsCommandList4> m_command_list;
-
 	// Nodes, keyed by node name
 	unordered_map<string, RenderGraphNode> nodes;
 
 	// Key is the "outgoing" node of the edge, so this map represents edges incoming to a given node
 	multimap<string, RenderGraphEdge> incoming_edges;
 
-	// Key is the "incoming" node of the edge, so this map represents edges coming from a given node
+	// Key is the "incoming" node of the edge, so this map represents edges outgoing from a given node
 	multimap<string, RenderGraphEdge> outgoing_edges;
+
+private:
+	// D3D12 resources
+	ComPtr<ID3D12Device5> m_device;
+	ComPtr<D3D12MA::Allocator> m_allocator;
+	ComPtr<ID3D12GraphicsCommandList4> m_command_list;
 };
