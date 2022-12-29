@@ -370,7 +370,7 @@ struct RenderGraph
 	void AddEdge(const RenderGraphEdge&& in_edge);
 
 	// Works backwards (using edges) to determine graph connectivity to node_names
-	vector<RenderGraphNode*> RecurseNodes(const vector<string>& in_node_names);
+	vector<RenderGraphNode*> RecurseNodes(const vector<string>& in_node_names, unordered_map<string, size_t> visited_nodes);
 
 	void Execute();
 

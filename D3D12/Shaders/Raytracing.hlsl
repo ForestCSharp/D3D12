@@ -19,7 +19,7 @@
 
 typedef BuiltInTriangleIntersectionAttributes IntersectionAttributes;
 
-ConstantBuffer<SceneConstantBuffer> scene_constant_buffer : register(b0, space1);
+ConstantBuffer<GlobalConstantBuffer> global_constant_buffer : register(b0, space1);
 
 //TODO: 
 // Use PrimitiveIndex to index into vertices to retrieve vertex data
@@ -28,9 +28,9 @@ ConstantBuffer<SceneConstantBuffer> scene_constant_buffer : register(b0, space1)
 [shader("raygeneration")]
 void Raygen()
 {
-    RWTexture2D<float4> LightingBuffer = ResourceDescriptorHeap[scene_constant_buffer.lighting_buffer_index]; //Accumulate data here
-    RWTexture2D<float4> RenderTarget = ResourceDescriptorHeap[scene_constant_buffer.output_buffer_index];
-    RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[scene_constant_buffer.tlas_buffer_index];
+    RWTexture2D<float4> LightingBuffer = ResourceDescriptorHeap[global_constant_buffer.lighting_buffer_index]; //Accumulate data here
+    RWTexture2D<float4> RenderTarget = ResourceDescriptorHeap[global_constant_buffer.output_buffer_index];
+    RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[global_constant_buffer.tlas_buffer_index];
 
     uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims = float2(DispatchRaysDimensions().xy);
@@ -38,16 +38,16 @@ void Raygen()
 
     // Perspective Camera
     RayDesc ray;
-    ray.Origin = mul(scene_constant_buffer.view_inverse, float4(0, 0, 0, 1)).xyz;
-    float4 target = mul(scene_constant_buffer.projection_inverse, float4(d.x, -d.y, 1, 1));
-    ray.Direction = mul(scene_constant_buffer.view_inverse, float4(target.xyz, 0)).xyz;
+    ray.Origin = mul(global_constant_buffer.view_inverse, float4(0, 0, 0, 1)).xyz;
+    float4 target = mul(global_constant_buffer.projection_inverse, float4(d.x, -d.y, 1, 1));
+    ray.Direction = mul(global_constant_buffer.view_inverse, float4(target.xyz, 0)).xyz;
     ray.TMin = 0.001;
     ray.TMax = 100000.0;
     RayPayload payload = { float4(0, 0, 0, 0) };
     TraceRay(tlas, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, ~0, 0, 1, 0, ray, payload);
 
     //Note: a very basic path-tracer-esque test, accumulated over multiple frames
-    if (scene_constant_buffer.frames_rendered <= 1)
+    if (global_constant_buffer.frames_rendered <= 1)
     {
         LightingBuffer[DispatchRaysIndex().xy] = payload.color;
     }
@@ -56,10 +56,10 @@ void Raygen()
         LightingBuffer[DispatchRaysIndex().xy] += payload.color;
     }
 
-    const float divisor = scene_constant_buffer.frames_rendered > 0 ? float(scene_constant_buffer.frames_rendered) : 1;
+    const float divisor = global_constant_buffer.frames_rendered > 0 ? float(global_constant_buffer.frames_rendered) : 1;
     RenderTarget[DispatchRaysIndex().xy] = LightingBuffer[DispatchRaysIndex().xy] / divisor;
 
-    //uint seed = hash3(uint3(DispatchRaysIndex().xy, scene_constant_buffer.random));
+    //uint seed = hash3(uint3(DispatchRaysIndex().xy, global_constant_buffer.random));
     //RenderTarget[DispatchRaysIndex().xy] = float4(abs(randf_in_unit_sphere(seed)), 1);
 }
 
@@ -70,9 +70,10 @@ barycentrics.y * (vertex_array[2].attribute - vertex_array[0].attribute);
 [shader("closesthit")]
 void ClosestHit(inout RayPayload payload, in IntersectionAttributes attr)
 {
-    //TODO: per-instance. Or one big vert/idx buffer
-    StructuredBuffer<uint> indices = ResourceDescriptorHeap[scene_constant_buffer.indices_index];
-    StructuredBuffer<Vertex> vertices = ResourceDescriptorHeap[scene_constant_buffer.vertices_index];
+    StructuredBuffer<GpuInstanceData> instances = ResourceDescriptorHeap[global_constant_buffer.instance_buffer_index];
+    GpuInstanceData instance = instances[0]; //TODO: Testing instances buffer
+    StructuredBuffer<uint> indices = ResourceDescriptorHeap[instance.index_buffer_index];
+    StructuredBuffer<Vertex> vertices = ResourceDescriptorHeap[instance.vertex_buffer_index];
 
     uint triangles_per_primitive = 3;
     uint first_index = PrimitiveIndex() * triangles_per_primitive;
@@ -86,12 +87,12 @@ void ClosestHit(inout RayPayload payload, in IntersectionAttributes attr)
     /*payload.color = float4(hit_color, 1);*/
 
     //Spawn a shadow ray
-    RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[scene_constant_buffer.tlas_buffer_index];
-    const float3 sun_dir = normalize(scene_constant_buffer.sun_dir.xyz);
+    RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[global_constant_buffer.tlas_buffer_index];
+    const float3 sun_dir = normalize(global_constant_buffer.sun_dir.xyz);
 
     RayDesc secondary_ray;
     secondary_ray.Origin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-    uint seed = hash3(uint3(DispatchRaysIndex().xy, scene_constant_buffer.random));
+    uint seed = hash3(uint3(DispatchRaysIndex().xy, global_constant_buffer.random));
     secondary_ray.Direction = randf_in_hemisphere(hit_normal, seed);
     secondary_ray.TMin = 0.01;
     secondary_ray.TMax = 100000.0;
@@ -151,7 +152,7 @@ void ClosestHit(inout RayPayload payload, in IntersectionAttributes attr)
 [shader("miss")]
 void Miss(inout RayPayload payload)
 {
-    const float3 sun_dir = normalize(scene_constant_buffer.sun_dir.xyz);
+    const float3 sun_dir = normalize(global_constant_buffer.sun_dir.xyz);
     const float3 ray_dir = normalize(WorldRayDirection());
 
     // Felix Atmosphere

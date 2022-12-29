@@ -459,24 +459,24 @@ int main()
 	index_buffer.Write(mesh_indices, index_buffer_size);
 
 	// Constant Buffers
-	SceneConstantBuffer scene_constant_buffer_data =
+	GlobalConstantBuffer global_constant_buffer_data =
 	{
 		.sun_dir = Vector4(0.5, 0.25, 1, 0),
 	};
-	const size_t scene_constant_buffer_size = ROUND_UP(sizeof(SceneConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+	const size_t scene_constant_buffer_size = ROUND_UP(sizeof(GlobalConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
-	GpuBuffer scene_constant_buffers[frame_count];
+	GpuBuffer global_constant_buffers[frame_count];
 	for (int32_t frame_index = 0; frame_index < frame_count; ++frame_index)
 	{
-		GpuBuffer scene_constant_buffer(GpuBufferDesc{
+		GpuBuffer global_constant_buffer(GpuBufferDesc{
 			.allocator = gpu_memory_allocator,
 			.size = scene_constant_buffer_size,
 			.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 			.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 			.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
 		});
-		scene_constant_buffer.Write(&scene_constant_buffer_data, sizeof(SceneConstantBuffer));
-		scene_constant_buffers[frame_index] = scene_constant_buffer;
+		global_constant_buffer.Write(&global_constant_buffer_data, sizeof(GlobalConstantBuffer));
+		global_constant_buffers[frame_index] = global_constant_buffer;
 	}
 
 	BindlessResourceManager bindless_resource_manager(device);
@@ -991,14 +991,15 @@ int main()
 		.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
 	});
 
+	const UINT32 index_buffer_index = bindless_resource_manager.RegisterSRV(index_buffer, num_indices, sizeof(uint32_t));
+	const UINT32 vertex_buffer_index = bindless_resource_manager.RegisterSRV(vertex_buffer, num_vertices, sizeof(Vertex));
+
 	// Actually assign Descriptors
 	{
 		//bindless_resource_manager.RegisterCBV(scene_constant_buffer);
-		scene_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
-		scene_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
-		scene_constant_buffer_data.tlas_buffer_index = bindless_resource_manager.RegisterAccelerationStructure(top_level_acceleration_structure);
-		scene_constant_buffer_data.indices_index = bindless_resource_manager.RegisterSRV(index_buffer, num_indices, sizeof(uint32_t));
-		scene_constant_buffer_data.vertices_index = bindless_resource_manager.RegisterSRV(vertex_buffer, num_vertices, sizeof(Vertex));
+		global_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
+		global_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
+		global_constant_buffer_data.tlas_buffer_index = bindless_resource_manager.RegisterAccelerationStructure(top_level_acceleration_structure);
 	}
 
 	wait_gpu_idle(device, command_queue);
@@ -1011,7 +1012,25 @@ int main()
 	int previous_mouse_y = 0;
 	Vector2 mouse_delta(0.f, 0.f);
 
-	scene_constant_buffer_data.frames_rendered = 0;
+	global_constant_buffer_data.frames_rendered = 0;
+
+	vector<GpuInstanceData> instances;
+	instances.push_back(GpuInstanceData
+	{
+		.vertex_buffer_index = vertex_buffer_index,
+		.index_buffer_index = index_buffer_index,
+	});
+	const size_t instances_buffer_size = instances.size() * sizeof(GpuInstanceData);
+	GpuBuffer instances_buffer(GpuBufferDesc{
+		.allocator = gpu_memory_allocator,
+		.size = instances_buffer_size,
+		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
+		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
+	});
+	instances_buffer.Write(instances.data(), instances_buffer_size);
+	global_constant_buffer_data.instance_buffer_index = bindless_resource_manager.RegisterSRV(instances_buffer, (UINT32) instances.size(), sizeof(GpuInstanceData));
+	global_constant_buffer_data.instance_buffer_count = (UINT32) instances.size();
 
 	while (!should_close)
 	{
@@ -1043,7 +1062,7 @@ int main()
 					.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 					.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
 				});
-				scene_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
+				global_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
 
 				bindless_resource_manager.UnregisterResource(raytracing_output_texture);
 				raytracing_output_texture = GpuTexture(GpuTextureDesc{
@@ -1054,14 +1073,14 @@ int main()
 					.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 					.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
 				});
-				scene_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
+				global_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
 
-				scene_constant_buffer_data.frames_rendered = 0;
+				global_constant_buffer_data.frames_rendered = 0;
 			}
 		}
 
-		scene_constant_buffer_data.frames_rendered += 1;
-		scene_constant_buffer_data.random = rand();
+		global_constant_buffer_data.frames_rendered += 1;
+		global_constant_buffer_data.random = rand();
 
 		// Calculate Mouse Delta
 		{
@@ -1078,8 +1097,8 @@ int main()
 			const Vector3 cam_right = Cross(cam_forward, cam_up);
 			const Quaternion quat_pitch = Quaternion::CreateFromAxisAngle(cam_right, speed * mouse_delta.y);
 			const Quaternion quat_yaw = Quaternion::CreateFromAxisAngle(cam_up, speed * mouse_delta.x);
-			scene_constant_buffer_data.sun_dir = Normalize(Vector4::Transform(scene_constant_buffer_data.sun_dir, quat_pitch * quat_yaw));
-			scene_constant_buffer_data.frames_rendered = 0;
+			global_constant_buffer_data.sun_dir = Normalize(Vector4::Transform(global_constant_buffer_data.sun_dir, quat_pitch * quat_yaw));
+			global_constant_buffer_data.frames_rendered = 0;
 		}
 		else if (IsKeyPressed(VK_LBUTTON))
 		{
@@ -1092,7 +1111,7 @@ int main()
 
 			if (abs(mouse_delta.x) > 0.0 || abs(mouse_delta.y) > 0.0)
 			{
-				scene_constant_buffer_data.frames_rendered = 0;
+				global_constant_buffer_data.frames_rendered = 0;
 			}
 		}
 
@@ -1108,7 +1127,7 @@ int main()
 				if (IsKeyPressed(key))
 				{
 					cam_pos += move_vec;
-					scene_constant_buffer_data.frames_rendered = 0;
+					global_constant_buffer_data.frames_rendered = 0;
 				}
 			};
 
@@ -1123,18 +1142,18 @@ int main()
 		{
 			Vector3 cam_target = cam_pos + cam_forward;
 			const Matrix view = Matrix::CreateLookAt(cam_pos, cam_target, cam_up);
-			scene_constant_buffer_data.view = view;
-			scene_constant_buffer_data.view_inverse = view.Invert();
+			global_constant_buffer_data.view = view;
+			global_constant_buffer_data.view_inverse = view.Invert();
 
 			float fieldOfView = 3.14159f / 4.0f; //PI / 4 : 90 degrees
 			float aspectRatio = (float) width / (float) height;
 			const Matrix proj = Matrix::CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, 0.01f, 10000.0f);
-			scene_constant_buffer_data.projection = proj;
-			scene_constant_buffer_data.projection_inverse = proj.Invert();
+			global_constant_buffer_data.projection = proj;
+			global_constant_buffer_data.projection_inverse = proj.Invert();
 		}
 
 		//Update current frame's constant buffer
-		scene_constant_buffers[frame_data.frame_index].Write(&scene_constant_buffer_data, sizeof(scene_constant_buffer_data));
+		global_constant_buffers[frame_data.frame_index].Write(&global_constant_buffer_data, sizeof(global_constant_buffer_data));
 
 		// Process any messages in the queue.
 		MSG msg = {};
@@ -1158,7 +1177,6 @@ int main()
 				// 1. Rasterize scene in color, output that texture
 				// 2. convert to grayscale
 				// 3. copy to swapchain + present
-
 				// Render Graph Testing
 				RenderGraph render_graph(RenderGraphDesc
 				{
@@ -1230,7 +1248,7 @@ int main()
 						command_list->SetPipelineState(first_node_pipeline_state.Get());
 
 						command_list->SetGraphicsRootDescriptorTable(0, bindless_resource_manager.GetGpuHandle());
-						command_list->SetGraphicsRootConstantBufferView(1, scene_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
+						command_list->SetGraphicsRootConstantBufferView(1, global_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
 
 						RenderGraphOutput& color_output = self.GetOutput("color");
 						D3D12_CPU_DESCRIPTOR_HANDLE& rtv_handle = color_output.GetRtvHandle(device);
@@ -1261,26 +1279,7 @@ int main()
 							.bottom = (LONG) height,
 						};
 						command_list->RSSetScissorRects(1, &scissor);
-
-						//TODO: Draw Meshes (Use GPU Scene)
-
-						D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view =
-						{
-							.BufferLocation = vertex_buffer.GetGPUVirtualAddress(),
-							.SizeInBytes = (UINT)vertex_buffer.GetSize(),
-							.StrideInBytes = sizeof(Vertex),
-						};
-						command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
-
-						D3D12_INDEX_BUFFER_VIEW index_buffer_view =
-						{
-							.BufferLocation = index_buffer.GetGPUVirtualAddress(),
-							.SizeInBytes = (UINT) index_buffer.GetSize(),
-							.Format = DXGI_FORMAT_R32_UINT,
-						};
-						command_list->IASetIndexBuffer(&index_buffer_view);
-
-						command_list->DrawIndexedInstanced(num_indices, 1, 0, 0, 0);
+						command_list->DrawInstanced(num_indices, 1, 0, 0);
 					},
 				});
 
@@ -1346,7 +1345,8 @@ int main()
 				render_graph.Execute();
 
 				//FCS TODO: Pipeline isn't living long enough.
-				//^ Add a pipeline manager or some way to keep resources around until a specific frame is done rendering...
+				//FCS TODO: Each Render Graph needs to live until it's frame has completed.
+				//^ Add some way to keep resources around until a specific frame is done rendering.
 				wait_gpu_idle(device, command_queue);
 			}
 			else
@@ -1369,7 +1369,7 @@ int main()
 
 				command_list->SetPipelineState1(dxr_state_object.Get());
 				command_list->SetComputeRootDescriptorTable(0, bindless_resource_manager.GetGpuHandle());
-				command_list->SetComputeRootConstantBufferView(1, scene_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
+				command_list->SetComputeRootConstantBufferView(1, global_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
 
 
 				D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};

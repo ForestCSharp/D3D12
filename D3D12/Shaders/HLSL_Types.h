@@ -52,32 +52,39 @@ struct Viewport
     float bottom;
 };
 
-struct SceneConstantBuffer
+struct GpuInstanceData
 {
+    uint vertex_buffer_index;
+    uint index_buffer_index;
+};
+
+struct GlobalConstantBuffer
+{
+    // Camera data
     float4x4 view;
     float4x4 view_inverse;
     float4x4 projection;
     float4x4 projection_inverse;
+
+    // Old Raytracing-pass specific data
     float4 sun_dir;
     uint lighting_buffer_index;
     uint output_buffer_index;
     uint tlas_buffer_index;
-    uint indices_index; //TODO: move to per-instance data
-    uint vertices_index; //TODO: move to per-instance data
     uint frames_rendered;
     uint random;
+
+    // Gpu Scene
+    uint instance_buffer_index;
+    uint instance_buffer_count;
+    // uint draw_to_instance_buffer_index; //Maps DrawInstanced instance ID to an index in instance_buffer
+    // uint draw_to_instance_buffer_count;
 };
 
 struct RayPayload
 {
     float4 color;
 };
-
-//struct InstanceData
-//{
-//    uint vertex_buffer_index;
-//    uint index_buffer_index;
-//};
 
 static uint NUM_BINDLESS_DESCRIPTORS_PER_TYPE = 8192;
 

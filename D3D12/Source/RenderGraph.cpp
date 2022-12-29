@@ -20,7 +20,7 @@ void RenderGraphNode::Execute(struct RenderGraph& render_graph, ComPtr<ID3D12Gra
 			RenderGraphOutput& other_node_output = other_node.outputs.at(*edge.incoming_resource);
 			input.incoming_resource = &other_node_output;
 
-			//FCS TODO: if input and output resource states don't agree, we'll need a barrier
+			// if input and output resource states don't agree, we'll need a barrier
 			const D3D12_RESOURCE_STATES prev_state = other_node_output.GetResourceState();
 			const D3D12_RESOURCE_STATES new_state = input.GetResourceState();
 			if (prev_state != new_state)
@@ -47,6 +47,7 @@ void RenderGraph::AddNode(const RenderGraphNodeDesc&& in_desc)
 	nodes.insert({ in_desc.name, new_node });
 }
 
+// TODO: Cycle detection
 void RenderGraph::AddEdge(const RenderGraphEdge&& in_edge)
 {
 	auto input_node = nodes.find(in_edge.incoming_node);
@@ -69,34 +70,47 @@ void RenderGraph::AddEdge(const RenderGraphEdge&& in_edge)
 	outgoing_edges.insert({in_edge.incoming_node, in_edge});
 }
 
-//TODO: Cycle detection
-//TODO: nodes should only exist once in "sorted_nodes"
-vector<RenderGraphNode*> RenderGraph::RecurseNodes(const vector<string>& in_node_names)
+vector<RenderGraphNode*> RenderGraph::RecurseNodes(const vector<string>& in_node_names, unordered_map<string, size_t> visited_nodes)
 {
 	assert(in_node_names.size() > 0);
 
+	/*	
+		We recursively build up our sorted nodes by pushing them onto an array, which will
+		later be iterated over in reverse order to correctly evaulate dependencies before
+		a given node
+	*/
 	vector<RenderGraphNode*> sorted_nodes;
 
-	// push in_node_names first
+	// Add in_node_names to sorted nodes
 	for (const string& node_name : in_node_names)
 	{
+		/*	
+			If we've already visited this node, we've now found an earlier dependency that 
+			we need to satisfy. So remove it, and then re-add it on the end
+		*/
+		if (visited_nodes.contains(node_name))
+		{
+			sorted_nodes.erase(sorted_nodes.begin() + visited_nodes.at(node_name));
+		}
 		sorted_nodes.push_back(&nodes.find(node_name)->second);
+		visited_nodes[node_name] = sorted_nodes.size() - 1;
 	}
 
-	vector<string> child_node_names;
+	// Build list of dependency node names we'll need to process
+	vector<string> dependency_node_names;
 	for (const string& node_name : in_node_names)
 	{
 		auto equal_range = incoming_edges.equal_range(node_name);
 		for (auto& itr = equal_range.first; itr != equal_range.second; ++itr)
 		{
-			child_node_names.push_back(itr->second.incoming_node);
+			dependency_node_names.push_back(itr->second.incoming_node);
 		}
 	}
 
 	// Base Case: No child nodes left to process
-	if (child_node_names.size() > 0)
+	if (dependency_node_names.size() > 0)
 	{
-		vector<RenderGraphNode*> child_sorted_nodes = RecurseNodes(child_node_names);
+		vector<RenderGraphNode*> child_sorted_nodes = RecurseNodes(dependency_node_names, visited_nodes);
 		sorted_nodes.insert(sorted_nodes.end(), child_sorted_nodes.begin(), child_sorted_nodes.end());
 	}
 
@@ -116,7 +130,8 @@ void RenderGraph::Execute()
 	}
 
 	// 2. Work backwards from terminal nodes to determine flow of execution (sort nodes)
-	vector<RenderGraphNode*> sorted_nodes = RecurseNodes(terminal_node_names);
+	unordered_map<string, size_t> visited_nodes;
+	vector<RenderGraphNode*> sorted_nodes = RecurseNodes(terminal_node_names, visited_nodes);
 
 	// 3. Work backwards through sorted nodes + execute them
 	for (auto it = sorted_nodes.rbegin(); it != sorted_nodes.rend(); ++it)
