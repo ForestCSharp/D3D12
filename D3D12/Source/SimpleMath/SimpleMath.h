@@ -593,7 +593,7 @@ namespace DirectX
             static Matrix Transform(const Matrix& M, const Quaternion& rotation) noexcept;
 
             // Constants
-            static const Matrix Identity;
+            static Matrix Identity() { return Matrix(); }
         };
 
         // Binary operators

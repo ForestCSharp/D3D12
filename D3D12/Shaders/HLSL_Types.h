@@ -54,6 +54,7 @@ struct Viewport
 
 struct GpuInstanceData
 {
+    float4x4 world_matrix;
     uint vertex_buffer_index;
     uint index_buffer_index;
 };

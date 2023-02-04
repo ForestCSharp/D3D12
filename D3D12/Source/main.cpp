@@ -463,14 +463,14 @@ int main()
 	{
 		.sun_dir = Vector4(0.5, 0.25, 1, 0),
 	};
-	const size_t scene_constant_buffer_size = ROUND_UP(sizeof(GlobalConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+	const size_t global_constant_buffer_size = ROUND_UP(sizeof(GlobalConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
 	GpuBuffer global_constant_buffers[frame_count];
 	for (int32_t frame_index = 0; frame_index < frame_count; ++frame_index)
 	{
 		GpuBuffer global_constant_buffer(GpuBufferDesc{
 			.allocator = gpu_memory_allocator,
-			.size = scene_constant_buffer_size,
+			.size = global_constant_buffer_size,
 			.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 			.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 			.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
@@ -996,7 +996,6 @@ int main()
 
 	// Actually assign Descriptors
 	{
-		//bindless_resource_manager.RegisterCBV(scene_constant_buffer);
 		global_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
 		global_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
 		global_constant_buffer_data.tlas_buffer_index = bindless_resource_manager.RegisterAccelerationStructure(top_level_acceleration_structure);
@@ -1014,9 +1013,11 @@ int main()
 
 	global_constant_buffer_data.frames_rendered = 0;
 
+	/** Gpu Scene (array of instances) */
 	vector<GpuInstanceData> instances;
 	instances.push_back(GpuInstanceData
 	{
+		.world_matrix = Matrix::Identity(),
 		.vertex_buffer_index = vertex_buffer_index,
 		.index_buffer_index = index_buffer_index,
 	});
@@ -1169,14 +1170,14 @@ int main()
 			const bool use_render_graph = true;
 			if (use_render_graph)
 			{
-				//FCS TODO: RenderGraph should manage its own command_list... should pass in a command allocator to RenderGraphDesc
+				//FCS TODO: RenderGraph should manage its own command_list(s)... should pass in a command allocator to RenderGraphDesc
 				HR_CHECK(frame_data.get_command_allocator()->Reset());
 				HR_CHECK(command_list->Reset(frame_data.get_command_allocator(), nullptr));
 
 				// FCS TODO: Basic Test (3 nodes)
-				// 1. Rasterize scene in color, output that texture
-				// 2. convert to grayscale
-				// 3. copy to swapchain + present
+				// 1. [DONE] Rasterize scene in color, output that texture
+				// 2. [TODO] convert to grayscale
+				// 3. [DONE] copy to swapchain + present
 				// Render Graph Testing
 				RenderGraph render_graph(RenderGraphDesc
 				{
@@ -1203,7 +1204,7 @@ int main()
 					},
 				};
 
-				//FCS TODO: isn't living long enough
+				//FCS TODO: Pipelines aren't living long enough (see wait_gpu_idle after render graph execution)
 				ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
 					.with_root_signature(global_root_signature)
 					.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
@@ -1280,6 +1281,37 @@ int main()
 						};
 						command_list->RSSetScissorRects(1, &scissor);
 						command_list->DrawInstanced(num_indices, 1, 0, 0);
+					},
+				});
+
+				render_graph.AddNode(RenderGraphNodeDesc
+				{
+					.name = "convert_to_grayscale",
+					.setup = [&](RenderGraphNode& self)
+					{
+						self.AddTextureInput("input", RenderGraphTextureDesc
+						{
+							.width = width,
+							.height = height,
+							.format = DXGI_FORMAT_R8G8B8A8_UNORM,
+							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+							.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
+						});
+
+						self.AddTextureOutput("output", RenderGraphTextureDesc
+						{
+							.width = width,
+							.height = height,
+							.format = DXGI_FORMAT_R8G8B8A8_UNORM,
+							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+							.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
+							.optimized_clear_value = clear_color,
+						});
+					},
+					.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
+					{
+						//FCS TODO: Need way to pass uniforms to shaders?
+						//FCS TODO: Compute shader to convert input to grayscale output
 					},
 				});
 
