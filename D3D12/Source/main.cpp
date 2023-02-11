@@ -35,6 +35,7 @@ using namespace DirectX::SimpleMath;
 using STL_IMPL::optional;
 using STL_IMPL::vector;
 using STL_IMPL::wstring;
+using STL_IMPL::move;
 using Microsoft::WRL::ComPtr;
 
 static constexpr UINT frame_count = 3;
@@ -102,7 +103,7 @@ struct FrameData
 	ComPtr<ID3D12CommandAllocator> command_allocators[frame_count];
 
 	// Synchronization
-	UINT frame_index = 0;
+	UINT current_backbuffer_index = 0;
 	HANDLE fence_event;
 	ComPtr<ID3D12Fence> fence;
 	UINT64 fence_values[frame_count];
@@ -158,7 +159,7 @@ struct FrameData
 
 		HR_CHECK(create_info.factory->MakeWindowAssociation(create_info.window, 0));
 		HR_CHECK(swapchain_1.As(&swapchain));
-		frame_index = swapchain->GetCurrentBackBufferIndex();
+		current_backbuffer_index = swapchain->GetCurrentBackBufferIndex();
 
 		ComPtr<ID3D12DescriptorHeap> rtv_descriptor_heap;
 		const UINT rtv_heap_offset = create_info.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -207,12 +208,12 @@ struct FrameData
 
 	ID3D12CommandAllocator* get_command_allocator() const
 	{
-		return command_allocators[frame_index].Get();
+		return command_allocators[current_backbuffer_index].Get();
 	}
 
 	ID3D12Resource* get_render_target() const
 	{
-		return render_targets[frame_index].Get();
+		return render_targets[current_backbuffer_index].Get();
 	}
 
 	void present()
@@ -220,21 +221,34 @@ struct FrameData
 		HR_CHECK(swapchain->Present(1, 0));
 	}
 
+	//TODO: Method for registering other per-frame resources
+	unordered_map<UINT64, vector<RenderGraph>> pending_render_graphs;
+	void register_graph(RenderGraph&& in_resource)
+	{
+		pending_render_graphs[fence_values[current_backbuffer_index]].push_back(move(in_resource));
+	}
+
 	void wait_for_previous_frame(ComPtr<ID3D12CommandQueue> command_queue)
 	{
-		// Signal and increment the fence value.
-		const UINT64 current_fence_value = fence_values[frame_index];
+		// Signal The current fence value
+		const UINT64 current_fence_value = fence_values[current_backbuffer_index];
 		HR_CHECK(command_queue->Signal(fence.Get(), current_fence_value));
 
-		frame_index = swapchain->GetCurrentBackBufferIndex();
-		// Wait until the previous frame is finished.
-		if (fence->GetCompletedValue() < fence_values[frame_index])
+		// Update Current Backbuffer Index
+		current_backbuffer_index = swapchain->GetCurrentBackBufferIndex();
+		
+		// Check the fence's current completed value. If it is less than the value at our new current_back_buffer_index, we need to wait
+		if (fence->GetCompletedValue() < fence_values[current_backbuffer_index])
 		{
-			HR_CHECK(fence->SetEventOnCompletion(fence_values[frame_index], fence_event));
+			HR_CHECK(fence->SetEventOnCompletion(fence_values[current_backbuffer_index], fence_event));
 			WaitForSingleObjectEx(fence_event, INFINITE, FALSE);
 		}
 
-		fence_values[frame_index] = current_fence_value + 1;
+		// Clean up any resources associated with that fence_value
+		pending_render_graphs.erase(fence_values[current_backbuffer_index]);
+
+		// Update our fence value for next usage
+		fence_values[current_backbuffer_index] = current_fence_value + 1;
 	}
 };
 
@@ -286,14 +300,14 @@ int main()
 	window_class.lpszClassName = L"DXSampleClass";
 	RegisterClassEx(&window_class);
 
-	UINT width = 1280; //TODO: Rename to render_width
-	UINT height = 720; //TODO: Rename to render_height
-	RECT window_rect = { 0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+	UINT render_width = 1280;
+	UINT render_height = 720;
+	RECT window_rect = { 0, 0, static_cast<LONG>(render_width), static_cast<LONG>(render_height)};
 	AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
 
 	HWND window = CreateWindow(
 		window_class.lpszClassName,
-		L"DXR_SingleFile",
+		L"D3D12",
 		WS_OVERLAPPEDWINDOW,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
@@ -363,17 +377,14 @@ int main()
 
 	FrameDataDesc frame_data_create_info = 
 	{
-		.width = width,
-		.height = height,
+		.width = render_width,
+		.height = render_height,
 		.device = device,
 		.factory = factory,
 		.command_queue = command_queue,
 		.window = window,
 	};
 	FrameData frame_data(frame_data_create_info);
-
-	//Compile raytracing shaders
-	ComPtr<IDxcBlob> raytracing_shader_lib = CompileShaderLibrary(L"Shaders/Raytracing.hlsl");
 
 	// 12. Create Command list using command allocator and pipeline state, and close it (we'll record it later)
 	ComPtr<ID3D12GraphicsCommandList4> command_list;
@@ -466,7 +477,7 @@ int main()
 	const size_t global_constant_buffer_size = ROUND_UP(sizeof(GlobalConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
 	GpuBuffer global_constant_buffers[frame_count];
-	for (int32_t frame_index = 0; frame_index < frame_count; ++frame_index)
+	for (int32_t current_backbuffer_index = 0; current_backbuffer_index < frame_count; ++current_backbuffer_index)
 	{
 		GpuBuffer global_constant_buffer(GpuBufferDesc{
 			.allocator = gpu_memory_allocator,
@@ -476,15 +487,14 @@ int main()
 			.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
 		});
 		global_constant_buffer.Write(&global_constant_buffer_data, sizeof(GlobalConstantBuffer));
-		global_constant_buffers[frame_index] = global_constant_buffer;
+		global_constant_buffers[current_backbuffer_index] = global_constant_buffer;
 	}
 
 	BindlessResourceManager bindless_resource_manager(device);
 	
 	ComPtr<ID3D12RootSignature> global_root_signature;
-	ComPtr<ID3D12RootSignature> local_root_signature;
 	{
-		auto SerializeAndCreateRaytracingRootSignature = [&](D3D12_ROOT_SIGNATURE_DESC& desc, ComPtr<ID3D12RootSignature>* p_root_signature)
+		auto SerializeAndCreateRootSignature = [&](D3D12_ROOT_SIGNATURE_DESC& desc, ComPtr<ID3D12RootSignature>* p_root_signature)
 		{
 			ComPtr<ID3DBlob> blob;
 			ComPtr<ID3DBlob> error;
@@ -494,46 +504,9 @@ int main()
 		};
 
 		{
-			// FCS TODO: Don't add these to desc_table
 			// Instead Send Constant buffer via table (with indices for these 2 resources accessed via "ResourceDescriptorHeap"
 			// See https://microsoft.github.io/DirectX-Specs/d3d/HLSL_ShaderModel6_6.html
 			// See https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_DynamicResources.html
-			D3D12_DESCRIPTOR_RANGE descriptor_ranges[] =
-			{
-				{
-				.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-				.NumDescriptors = NUM_BINDLESS_DESCRIPTORS_PER_TYPE,
-				.BaseShaderRegister = 0,
-				.RegisterSpace = 0,
-				.OffsetInDescriptorsFromTableStart = 0, //Different Descriptor Types can overlap
-				},
-				{
-				.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-				.NumDescriptors = NUM_BINDLESS_DESCRIPTORS_PER_TYPE,
-				.BaseShaderRegister = 0,
-				.RegisterSpace = 0,
-				.OffsetInDescriptorsFromTableStart = 0, //Different Descriptor Types can overlap
-				},
-				{
-				.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-				.NumDescriptors = NUM_BINDLESS_DESCRIPTORS_PER_TYPE,
-				.BaseShaderRegister = 0,
-				.RegisterSpace = 0,
-				.OffsetInDescriptorsFromTableStart = 0, //Different Descriptor Types can overlap
-				},
-			};
-
-			D3D12_ROOT_PARAMETER descriptor_table_root_param = 
-			{
-				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-				.DescriptorTable =
-				{
-					.NumDescriptorRanges = _countof(descriptor_ranges),
-					.pDescriptorRanges = descriptor_ranges,
-				},
-				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
-			};
-
 			D3D12_ROOT_PARAMETER scene_cbv_root_param =
 			{
 				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,
@@ -545,7 +518,7 @@ int main()
 				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
 			};
 
-			D3D12_ROOT_PARAMETER root_params[] = { descriptor_table_root_param, scene_cbv_root_param };
+			D3D12_ROOT_PARAMETER root_params[] = { scene_cbv_root_param };
 
 			D3D12_ROOT_SIGNATURE_DESC root_signature_desc = 
 			{
@@ -556,456 +529,16 @@ int main()
 				.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
 						| D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED,
 			};
-			SerializeAndCreateRaytracingRootSignature(root_signature_desc, &global_root_signature);
-		}
-		
-		{
-			// Create an empty local root signature
-			D3D12_ROOT_SIGNATURE_DESC root_signature_desc = 
-			{
-				.NumParameters = 0,
-				.pParameters = nullptr,
-				.NumStaticSamplers = 0,
-				.pStaticSamplers = nullptr,
-				.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE,
-			};
-			SerializeAndCreateRaytracingRootSignature(root_signature_desc, &local_root_signature);
+			SerializeAndCreateRootSignature(root_signature_desc, &global_root_signature);
 		}
 	}
-
-	ComPtr<ID3D12StateObject> dxr_state_object;
-	{
-		// Create the minimal number of D3D12_STATE_SUBOBJECT for raytracing
-
-		//Need to set up subobject memory first so we can have back-references in the array
-		D3D12_STATE_SUBOBJECT subobjects[7]; //FCS TODO: hard-coded for now
-		memset(subobjects, 0, sizeof(subobjects));
-		int32_t current_index = 0;
-
-		// DXIL Library Subobject
-		D3D12_SHADER_BYTECODE shader_bytecode = {};
-		shader_bytecode.pShaderBytecode = raytracing_shader_lib->GetBufferPointer();
-		shader_bytecode.BytecodeLength = raytracing_shader_lib->GetBufferSize();
-
-		D3D12_EXPORT_DESC exports[] =
-		{
-			{
-				.Name = raygen_shader_name,
-				.ExportToRename = nullptr,
-				.Flags = D3D12_EXPORT_FLAG_NONE,
-			},
-			{
-				.Name = closest_hit_shader_name,
-				.ExportToRename = nullptr,
-				.Flags = D3D12_EXPORT_FLAG_NONE,
-			},
-			{
-				.Name = miss_shader_name,
-				.ExportToRename = nullptr,
-				.Flags = D3D12_EXPORT_FLAG_NONE,
-			}
-		};
-
-		D3D12_DXIL_LIBRARY_DESC dxil_lib_desc = {};
-		dxil_lib_desc.DXILLibrary = shader_bytecode;
-		dxil_lib_desc.NumExports = _countof(exports);
-		dxil_lib_desc.pExports = exports;
-
-		D3D12_STATE_SUBOBJECT& dxil_lib_subobject = subobjects[current_index++];
-		dxil_lib_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
-		dxil_lib_subobject.pDesc = &dxil_lib_desc;
-
-		//Hit Group Subobject
-		D3D12_HIT_GROUP_DESC hit_group_desc = {};
-		hit_group_desc.AnyHitShaderImport = nullptr;
-		hit_group_desc.ClosestHitShaderImport = closest_hit_shader_name;
-		hit_group_desc.IntersectionShaderImport = nullptr;
-		hit_group_desc.HitGroupExport = hit_group_name;
-		hit_group_desc.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
-
-		D3D12_STATE_SUBOBJECT& hit_group_subobject = subobjects[current_index++];
-		hit_group_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
-		hit_group_subobject.pDesc = &hit_group_desc;
-
-		//Shader config subobject
-		D3D12_RAYTRACING_SHADER_CONFIG shader_config_desc = {};
-		shader_config_desc.MaxPayloadSizeInBytes = sizeof(RayPayload);
-		shader_config_desc.MaxAttributeSizeInBytes = 2 * sizeof(float);
-
-		D3D12_STATE_SUBOBJECT& shader_config_subobject = subobjects[current_index++];
-		shader_config_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
-		shader_config_subobject.pDesc = &shader_config_desc;
-
-		//Local Root Signature subobject
-		D3D12_LOCAL_ROOT_SIGNATURE local_root_signature_desc = {};
-		local_root_signature_desc.pLocalRootSignature = local_root_signature.Get();
-
-		D3D12_STATE_SUBOBJECT& local_root_signature_subobject = subobjects[current_index++];
-		local_root_signature_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-		local_root_signature_subobject.pDesc = &local_root_signature_desc;
-
-		//Local Root Signature to Exports Association
-		D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION local_root_signature_to_exports_desc = {};
-		local_root_signature_to_exports_desc.pSubobjectToAssociate = &local_root_signature_subobject;
-		local_root_signature_to_exports_desc.NumExports = 1;
-		local_root_signature_to_exports_desc.pExports = &raygen_shader_name;
-
-		D3D12_STATE_SUBOBJECT& local_root_signature_to_exports_subobject = subobjects[current_index++];
-		local_root_signature_to_exports_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
-		local_root_signature_to_exports_subobject.pDesc = &local_root_signature_to_exports_desc;
-
-		//Global Root Signature Subobject
-		D3D12_GLOBAL_ROOT_SIGNATURE global_root_signature_desc = {};
-		global_root_signature_desc.pGlobalRootSignature = global_root_signature.Get();
-
-		D3D12_STATE_SUBOBJECT& global_root_signature_subobject = subobjects[current_index++];
-		global_root_signature_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-		global_root_signature_subobject.pDesc = &global_root_signature_desc;
-
-		//Pipeline Config
-		D3D12_RAYTRACING_PIPELINE_CONFIG pipeline_config_desc = {};
-		pipeline_config_desc.MaxTraceRecursionDepth = 1;
-
-		D3D12_STATE_SUBOBJECT& pipeline_config_subobject = subobjects[current_index++];
-		pipeline_config_subobject.Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
-		pipeline_config_subobject.pDesc = &pipeline_config_desc;
-
-		//Build State Object
-		D3D12_STATE_OBJECT_DESC state_object_desc = {};
-		state_object_desc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
-		state_object_desc.NumSubobjects = _countof(subobjects);
-		state_object_desc.pSubobjects = subobjects;
-
-		HR_CHECK(device->CreateStateObject(&state_object_desc, IID_PPV_ARGS(&dxr_state_object)));
-	}
-
-	GpuBuffer bottom_level_acceleration_structure;
-	GpuBuffer top_level_acceleration_structure;
-	{
-		D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc = {};
-		geometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-		geometryDesc.Triangles.IndexBuffer = index_buffer.GetGPUVirtualAddress();
-		geometryDesc.Triangles.IndexCount = static_cast<UINT>(index_buffer.GetSize()) / sizeof(uint32_t);
-		geometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-		geometryDesc.Triangles.Transform3x4 = 0;
-		geometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-		geometryDesc.Triangles.VertexCount = static_cast<UINT>(vertex_buffer.GetSize()) / sizeof(Vertex);
-		geometryDesc.Triangles.VertexBuffer.StartAddress = vertex_buffer.GetGPUVirtualAddress();
-		geometryDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(Vertex);
-
-		// Mark the geometry as opaque. 
-		// PERFORMANCE TIP: mark geometry as opaque whenever applicable as it can enable important ray processing optimizations.
-		// Note: When rays encounter opaque geometry an any hit shader will not be executed whether it is present or not.
-		geometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-
-		const int32_t num_instances = 1000;
-
-		// Get required sizes for an acceleration structure.
-		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top_level_inputs = {};
-		top_level_inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-		top_level_inputs.Flags = buildFlags;
-		top_level_inputs.NumDescs = num_instances;
-		top_level_inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-
-		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO topLevelPrebuildInfo = {};
-		device->GetRaytracingAccelerationStructurePrebuildInfo(&top_level_inputs, &topLevelPrebuildInfo);
-		HR_CHECK(topLevelPrebuildInfo.ResultDataMaxSizeInBytes > 0);
-
-		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomLevelPrebuildInfo = {};
-		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottomLevelInputs = {};
-		bottomLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-		bottomLevelInputs.Flags = buildFlags;
-		bottomLevelInputs.pGeometryDescs = &geometryDesc;
-		bottomLevelInputs.NumDescs = 1;
-		device->GetRaytracingAccelerationStructurePrebuildInfo(&bottomLevelInputs, &bottomLevelPrebuildInfo);
-		HR_CHECK(bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes > 0);
-
-		uint64_t scratch_size = max(topLevelPrebuildInfo.ScratchDataSizeInBytes, bottomLevelPrebuildInfo.ScratchDataSizeInBytes);
-		GpuBuffer scratch_buffer(GpuBufferDesc{
-			.allocator = gpu_memory_allocator,
-			.size = scratch_size,
-			.heap_type = D3D12_HEAP_TYPE_DEFAULT,
-			.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-			.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-		});
-
-		bottom_level_acceleration_structure = GpuBuffer(GpuBufferDesc{
-			.allocator = gpu_memory_allocator,
-			.size = bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes,
-			.heap_type = D3D12_HEAP_TYPE_DEFAULT,
-			.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-			.resource_state = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE
-		});
-
-		top_level_acceleration_structure = GpuBuffer(GpuBufferDesc{
-			.allocator = gpu_memory_allocator,
-			.size = topLevelPrebuildInfo.ResultDataMaxSizeInBytes,
-			.heap_type = D3D12_HEAP_TYPE_DEFAULT,
-			.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-			.resource_state = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE
-		});
-
-		//bottom_level_acceleration_structure = GpuBuffer(device, gpu_memory_allocator, bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
-		//top_level_acceleration_structure = GpuBuffer(device, gpu_memory_allocator, topLevelPrebuildInfo.ResultDataMaxSizeInBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
-
-		vector<D3D12_RAYTRACING_INSTANCE_DESC> instance_descs;
-		for (int32_t i = 0; i < num_instances; ++i)
-		{
-
-			D3D12_RAYTRACING_INSTANCE_DESC new_instance_desc = {};
-
-			const float random_span = num_instances * 1.25f;
-
-			if (i == 0) // Ground
-			{
-				const float ground_dimensions = 5000.0f;
-
-				// Scale
-				new_instance_desc.Transform[0][0] = ground_dimensions;
-				new_instance_desc.Transform[1][1] = 10.0f;
-				new_instance_desc.Transform[2][2] = ground_dimensions;
-
-				// Position
-				new_instance_desc.Transform[0][3] = 0.0f;
-				new_instance_desc.Transform[1][3] = -random_span / 2.0f;
-				new_instance_desc.Transform[2][3] = 0.0f;
-			}
-			else if (i < 3) // Walls
-			{
-				const float wall_width = 1000.0f;
-				const float wall_height = 1000.0f;
-				const float wall_thickness = 10.0f;
-
-				// Scale
-				new_instance_desc.Transform[0][0] = i < 2 ? wall_width : wall_thickness;
-				new_instance_desc.Transform[1][1] = wall_height;
-				new_instance_desc.Transform[2][2] = i < 2 ? wall_thickness : wall_width;
-
-				// Position
-				new_instance_desc.Transform[0][3] = 2000.0f;
-				new_instance_desc.Transform[1][3] = -random_span / 2.0f;
-				new_instance_desc.Transform[2][3] = 2000.0f;
-			}
-			else // Random Cubes
-			{
-				Vector3 random_pos = Vector3(randf() - 0.5f, randf() - 0.5f, randf() - 0.5f) * random_span;
-				const float cube_min_scale = 5.0f;
-				const float cube_max_scale = 40.0;
-				new_instance_desc.Transform[0][0] = rand_range(cube_min_scale, cube_max_scale);
-				new_instance_desc.Transform[1][1] = rand_range(cube_min_scale, cube_max_scale);
-				new_instance_desc.Transform[2][2] = rand_range(cube_min_scale, cube_max_scale);
-				new_instance_desc.Transform[0][3] = random_pos.x;
-				new_instance_desc.Transform[1][3] = random_pos.y;
-				new_instance_desc.Transform[2][3] = random_pos.z;
-			}
-
-			new_instance_desc.InstanceID = i;
-			new_instance_desc.InstanceMask = 1;
-			new_instance_desc.Flags = 0;
-			new_instance_desc.AccelerationStructure = bottom_level_acceleration_structure.GetGPUVirtualAddress();
-			instance_descs.push_back(new_instance_desc);
-
-		}
-		//// Create an instance desc for the bottom-level acceleration structure.
-		size_t instance_descs_size = instance_descs.size() * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
-		GpuBuffer instance_desc_buffer = GpuBuffer(GpuBufferDesc{
-			.allocator = gpu_memory_allocator,
-			.size = instance_descs_size,
-			.heap_type = D3D12_HEAP_TYPE_UPLOAD,
-			.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-			.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
-		});
-
-		instance_desc_buffer.Write(instance_descs.data(), instance_descs_size);
-
-		// Bottom Level Acceleration Structure desc
-		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bottomLevelBuildDesc = {};
-		{
-			bottomLevelBuildDesc.Inputs = bottomLevelInputs;
-			bottomLevelBuildDesc.ScratchAccelerationStructureData = scratch_buffer.GetGPUVirtualAddress();
-			bottomLevelBuildDesc.DestAccelerationStructureData = bottom_level_acceleration_structure.GetGPUVirtualAddress();
-		}
-
-		// Top Level Acceleration Structure desc
-		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC topLevelBuildDesc = {};
-		{
-			top_level_inputs.InstanceDescs = instance_desc_buffer.GetGPUVirtualAddress();
-			topLevelBuildDesc.Inputs = top_level_inputs;
-			topLevelBuildDesc.ScratchAccelerationStructureData = scratch_buffer.GetGPUVirtualAddress();
-			topLevelBuildDesc.DestAccelerationStructureData = top_level_acceleration_structure.GetGPUVirtualAddress();
-		}
-
-		//// Build acceleration structure.
-		command_list->Reset(frame_data.get_command_allocator(), nullptr);
-		command_list->BuildRaytracingAccelerationStructure(&bottomLevelBuildDesc, 0, nullptr);
-		const D3D12_RESOURCE_BARRIER barrier = 
-		{
-			.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV,
-			.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-			.UAV = 
-			{
-				.pResource = bottom_level_acceleration_structure.GetResource(),
-			}
-		};
-		command_list->ResourceBarrier(1, &barrier);
-		command_list->BuildRaytracingAccelerationStructure(&topLevelBuildDesc, 0, nullptr);
-		HR_CHECK(command_list->Close());
-
-		ID3D12CommandList* ppCommandLists[] = { command_list.Get() };
-		command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-
-		wait_gpu_idle(device, command_queue);
-	}
-
-	//Shader Tables
-	void* raygen_shader_identifier = nullptr;
-	void* miss_shader_identifier = nullptr;
-	void* hit_group_shader_identifier = nullptr;
-
-	auto GetShaderIdentifiers = [&](auto* stateObjectProperties)
-	{
-		raygen_shader_identifier = stateObjectProperties->GetShaderIdentifier(raygen_shader_name);
-		miss_shader_identifier = stateObjectProperties->GetShaderIdentifier(miss_shader_name);
-		hit_group_shader_identifier = stateObjectProperties->GetShaderIdentifier(hit_group_name);
-	};
-
-	// Get shader identifiers.
-	UINT shader_identifier_size;
-	{
-		ComPtr<ID3D12StateObjectProperties> state_object_properties;
-		HR_CHECK(dxr_state_object.As(&state_object_properties));
-		GetShaderIdentifiers(state_object_properties.Get());
-		shader_identifier_size = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-	}
-
-	struct ShaderRecord
-	{
-		ShaderRecord(void* pShaderIdentifier, UINT shaderIdentifierSize) :
-			shaderIdentifier(pShaderIdentifier, shaderIdentifierSize)
-		{}
-
-		ShaderRecord(void* pShaderIdentifier, UINT shaderIdentifierSize, void* pLocalRootArguments, UINT localRootArgumentsSize) :
-			shaderIdentifier(pShaderIdentifier, shaderIdentifierSize),
-			localRootArguments(pLocalRootArguments, localRootArgumentsSize)
-		{}
-
-		void CopyTo(void* dest) const
-		{
-			uint8_t* byteDest = static_cast<uint8_t*>(dest);
-			memcpy(byteDest, shaderIdentifier.ptr, shaderIdentifier.size);
-			if (localRootArguments.ptr)
-			{
-				memcpy(byteDest + shaderIdentifier.size, localRootArguments.ptr, localRootArguments.size);
-			}
-		}
-
-		struct PointerWithSize {
-			void* ptr;
-			UINT size;
-
-			PointerWithSize() : ptr(nullptr), size(0) {}
-			PointerWithSize(void* _ptr, UINT _size) : ptr(_ptr), size(_size) {};
-		};
-		PointerWithSize shaderIdentifier;
-		PointerWithSize localRootArguments;
-	};
-
-	class ShaderTable
-	{
-	public:
-		inline UINT Align(UINT size, UINT alignment)
-		{
-			return (size + (alignment - 1)) & ~(alignment - 1);
-		}
-
-		ShaderTable(ComPtr<ID3D12Device5> in_device, D3D12MA::Allocator* in_gpu_memory_allocator, UINT numShaderRecords, UINT shaderRecordSize, LPCWSTR resource_name)
-		{
-			m_shader_record_size = Align(shaderRecordSize, D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT);
-			m_shader_records.reserve(numShaderRecords);
-			UINT bufferSize = numShaderRecords * m_shader_record_size;
-
-			m_buffer = GpuBuffer(GpuBufferDesc{
-				.allocator = in_gpu_memory_allocator,
-				.size = bufferSize,
-				.heap_type = D3D12_HEAP_TYPE_UPLOAD,
-				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
-			});
-			m_buffer.Map(reinterpret_cast<void**>(&m_mapped_shader_records));
-		}
-
-		void push_back(const ShaderRecord& shaderRecord)
-		{
-			assert(m_shader_records.size() < m_shader_records.capacity());
-			m_shader_records.push_back(shaderRecord);
-			shaderRecord.CopyTo(m_mapped_shader_records);
-			m_mapped_shader_records += m_shader_record_size;
-		}
-
-		UINT GetShaderRecordSize() { return m_shader_record_size; }
-
-		ID3D12Resource* GetResource() const { return m_buffer.GetResource(); }
-	protected:
-		uint8_t* m_mapped_shader_records;
-		UINT m_shader_record_size;
-
-		// Debug support
-		wstring m_name;
-		vector<ShaderRecord> m_shader_records;
-
-		GpuBuffer m_buffer;
-	};
-
-	UINT numShaderRecords = 1;
-	UINT shaderRecordSize = shader_identifier_size;
-
-	// Ray gen shader table
-	ShaderTable raygen_shader_table(device, gpu_memory_allocator, numShaderRecords, shaderRecordSize, L"RayGenShaderTable");
-	raygen_shader_table.push_back(ShaderRecord(raygen_shader_identifier, shader_identifier_size));
-
-	// Miss shader table
-	ShaderTable miss_shader_table(device, gpu_memory_allocator, numShaderRecords, shaderRecordSize, L"MissShaderTable");
-	miss_shader_table.push_back(ShaderRecord(miss_shader_identifier, shader_identifier_size));
-
-	// Hit group shader table
-	ShaderTable hit_group_shader_table(device, gpu_memory_allocator, numShaderRecords, shaderRecordSize, L"HitGroupShaderTable");
-	hit_group_shader_table.push_back(ShaderRecord(hit_group_shader_identifier, shader_identifier_size));
-
-	//Raytracing Output Resource
-	GpuTexture lighting_buffer_texture(GpuTextureDesc{
-		.allocator = gpu_memory_allocator,
-		.width = width,
-		.height = height,
-		.format = DXGI_FORMAT_R32G32B32A32_FLOAT,
-		.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-		.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-	});
-
-	GpuTexture raytracing_output_texture(GpuTextureDesc{
-		.allocator = gpu_memory_allocator,
-		.width = width,
-		.height = height,
-		.format = frame_data.swap_chain_format,
-		.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-		.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-	});
 
 	const UINT32 index_buffer_index = bindless_resource_manager.RegisterSRV(index_buffer, num_indices, sizeof(uint32_t));
 	const UINT32 vertex_buffer_index = bindless_resource_manager.RegisterSRV(vertex_buffer, num_vertices, sizeof(Vertex));
 
-	// Actually assign Descriptors
-	{
-		global_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
-		global_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
-		global_constant_buffer_data.tlas_buffer_index = bindless_resource_manager.RegisterAccelerationStructure(top_level_acceleration_structure);
-	}
-
-	wait_gpu_idle(device, command_queue);
-
-	Vector3 cam_pos = Vector3(0, 0, -5);
+	Vector3 cam_pos = Vector3(5, 5, -5);
 	Vector3 cam_up = Vector3(0, 1, 0);
-	Vector3 cam_forward = Vector3(0, 0, 1);
+	Vector3 cam_forward = Normalize(Vector3(0, 0, 1) - cam_pos);
 
 	int previous_mouse_x = 0;
 	int previous_mouse_y = 0;
@@ -1040,41 +573,16 @@ int main()
 		{
 			LONG new_width = client_rect.right - client_rect.left;
 			LONG new_height = client_rect.bottom - client_rect.top;
-			if (new_width != width || new_height != height)
+			if (new_width != render_width || new_height != render_height)
 			{
-				width = new_width;
-				height = new_height;
+				render_width = new_width;
+				render_height = new_height;
 				printf("Width: %lu Height: %lu\n", new_width, new_height);
 
 				// Update width and height and call resize
-				frame_data_create_info.width = width;
-				frame_data_create_info.height = height;
+				frame_data_create_info.width = render_width;
+				frame_data_create_info.height = render_height;
 				frame_data.resize(frame_data_create_info);
-
-				//TODO: Make bindless unregister automatic(keep optional ref to resource manager when you register it, use that to unregister in destructor)
-				
-				// Resize other resources
-				bindless_resource_manager.UnregisterResource(lighting_buffer_texture);
-				lighting_buffer_texture = GpuTexture(GpuTextureDesc{
-					.allocator = gpu_memory_allocator,
-					.width = width,
-					.height = height,
-					.format = DXGI_FORMAT_R32G32B32A32_FLOAT,
-					.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-					.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-				});
-				global_constant_buffer_data.lighting_buffer_index = bindless_resource_manager.RegisterUAV(lighting_buffer_texture);
-
-				bindless_resource_manager.UnregisterResource(raytracing_output_texture);
-				raytracing_output_texture = GpuTexture(GpuTextureDesc{
-					.allocator = gpu_memory_allocator,
-					.width = width,
-					.height = height,
-					.format = frame_data.swap_chain_format,
-					.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-					.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-				});
-				global_constant_buffer_data.output_buffer_index = bindless_resource_manager.RegisterUAV(raytracing_output_texture);
 
 				global_constant_buffer_data.frames_rendered = 0;
 			}
@@ -1147,14 +655,14 @@ int main()
 			global_constant_buffer_data.view_inverse = view.Invert();
 
 			float fieldOfView = 3.14159f / 4.0f; //PI / 4 : 90 degrees
-			float aspectRatio = (float) width / (float) height;
+			float aspectRatio = (float) render_width / (float) render_height;
 			const Matrix proj = Matrix::CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, 0.01f, 10000.0f);
 			global_constant_buffer_data.projection = proj;
 			global_constant_buffer_data.projection_inverse = proj.Invert();
 		}
 
 		//Update current frame's constant buffer
-		global_constant_buffers[frame_data.frame_index].Write(&global_constant_buffer_data, sizeof(global_constant_buffer_data));
+		global_constant_buffers[frame_data.current_backbuffer_index].Write(&global_constant_buffer_data, sizeof(global_constant_buffer_data));
 
 		// Process any messages in the queue.
 		MSG msg = {};
@@ -1166,283 +674,214 @@ int main()
 
 		{ // Rendering
 
-			// Raytracing
-			const bool use_render_graph = true;
-			if (use_render_graph)
+			//FCS TODO: RenderGraph should manage its own command_list(s)... should pass in a command allocator to RenderGraphDesc
+			HR_CHECK(frame_data.get_command_allocator()->Reset());
+			HR_CHECK(command_list->Reset(frame_data.get_command_allocator(), nullptr));
+
+			// FCS TODO: Basic Test (3 nodes)
+			// 1. [DONE] Rasterize scene in color, output that texture
+			// 2. [TODO] convert to grayscale
+			// 3. [DONE] copy to swapchain + present
+			// Render Graph Testing
+			RenderGraph render_graph(RenderGraphDesc
 			{
-				//FCS TODO: RenderGraph should manage its own command_list(s)... should pass in a command allocator to RenderGraphDesc
-				HR_CHECK(frame_data.get_command_allocator()->Reset());
-				HR_CHECK(command_list->Reset(frame_data.get_command_allocator(), nullptr));
+				.device = device,
+				.allocator = gpu_memory_allocator,
+				.command_list = command_list,
+			});
 
-				// FCS TODO: Basic Test (3 nodes)
-				// 1. [DONE] Rasterize scene in color, output that texture
-				// 2. [TODO] convert to grayscale
-				// 3. [DONE] copy to swapchain + present
-				// Render Graph Testing
-				RenderGraph render_graph(RenderGraphDesc
-				{
-					.device = device,
-					.allocator = gpu_memory_allocator,
-					.command_list = command_list,
-				});
-
-				const DXGI_FORMAT color_format = DXGI_FORMAT_R8G8B8A8_UNORM;
-				const D3D12_CLEAR_VALUE clear_color =
-				{
-					.Format = color_format,
-					.Color = { 0.39f, 0.58f, 0.93f, 1.0f },
-				};
-
-				const DXGI_FORMAT depth_format = DXGI_FORMAT_D32_FLOAT;
-				const D3D12_CLEAR_VALUE clear_depth =
-				{
-					.Format = depth_format,
-					.DepthStencil =
-					{
-						.Depth = 1.0f,
-						.Stencil = 0,
-					},
-				};
-
-				//FCS TODO: Pipelines aren't living long enough (see wait_gpu_idle after render graph execution)
-				ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
-					.with_root_signature(global_root_signature)
-					.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
-					.with_ps(CompilePixelShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodePixelShader"))
-					.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
-					.with_depth_enabled(true)
-					.with_dsv_format(depth_format)
-					.with_rtv_formats({ color_format })
-					.with_debug_name(L"first_node_pipeline_state")
-				.build(device);
-
-				//Add some nodes
-				render_graph.AddNode(RenderGraphNodeDesc
-				{
-					.name = "first_node",
-					.setup = [&](RenderGraphNode& self)
-					{
-						self.AddTextureOutput("color", RenderGraphTextureDesc
-						{
-							.width = width,
-							.height = height,
-							.format = color_format,
-							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-							.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
-							.optimized_clear_value = clear_color,
-						});
-
-						self.AddTextureOutput("depth", RenderGraphTextureDesc
-						{
-							.width = width,
-							.height = height,
-							.format = depth_format,
-							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-							.resource_state = D3D12_RESOURCE_STATE_DEPTH_WRITE,
-							.optimized_clear_value = clear_depth,
-						});
-					},
-					.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
-					{
-						command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
-						command_list->SetGraphicsRootSignature(global_root_signature.Get());
-						command_list->SetPipelineState(first_node_pipeline_state.Get());
-
-						command_list->SetGraphicsRootDescriptorTable(0, bindless_resource_manager.GetGpuHandle());
-						command_list->SetGraphicsRootConstantBufferView(1, global_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
-
-						RenderGraphOutput& color_output = self.GetOutput("color");
-						D3D12_CPU_DESCRIPTOR_HANDLE& rtv_handle = color_output.GetRtvHandle(device);
-						RenderGraphOutput& depth_output = self.GetOutput("depth");
-						D3D12_CPU_DESCRIPTOR_HANDLE& depth_handle = depth_output.GetDsvHandle(device);
-
-						command_list->OMSetRenderTargets(1, &rtv_handle, FALSE, &depth_handle);
-						command_list->ClearRenderTargetView(rtv_handle, clear_color.Color, 0, nullptr);
-						command_list->ClearDepthStencilView(depth_handle, D3D12_CLEAR_FLAG_DEPTH, clear_depth.DepthStencil.Depth, 0, 0, nullptr);
-						command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-						D3D12_VIEWPORT viewport =
-						{
-							.TopLeftX = 0.0f,
-							.TopLeftY = 0.0f,
-							.Width = static_cast<FLOAT>(width),
-							.Height = static_cast<FLOAT>(height),
-							.MinDepth = 0.0f,
-							.MaxDepth = 1.0f,
-						};
-						command_list->RSSetViewports(1, &viewport);
-
-						const D3D12_RECT scissor =
-						{
-							.left = 0,
-							.top = 0,
-							.right = (LONG) width,
-							.bottom = (LONG) height,
-						};
-						command_list->RSSetScissorRects(1, &scissor);
-						command_list->DrawInstanced(num_indices, 1, 0, 0);
-					},
-				});
-
-				render_graph.AddNode(RenderGraphNodeDesc
-				{
-					.name = "convert_to_grayscale",
-					.setup = [&](RenderGraphNode& self)
-					{
-						self.AddTextureInput("input", RenderGraphTextureDesc
-						{
-							.width = width,
-							.height = height,
-							.format = DXGI_FORMAT_R8G8B8A8_UNORM,
-							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-							.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
-						});
-
-						self.AddTextureOutput("output", RenderGraphTextureDesc
-						{
-							.width = width,
-							.height = height,
-							.format = DXGI_FORMAT_R8G8B8A8_UNORM,
-							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-							.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
-							.optimized_clear_value = clear_color,
-						});
-					},
-					.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
-					{
-						//FCS TODO: Need way to pass uniforms to shaders?
-						//FCS TODO: Compute shader to convert input to grayscale output
-					},
-				});
-
-				render_graph.AddNode(RenderGraphNodeDesc
-				{
-					.name = "copy_to_backbuffer",
-					.setup = [&](RenderGraphNode& self)
-					{
-						self.AddTextureInput("input", RenderGraphTextureDesc
-						{
-							.width = width,
-							.height = height,
-							.format = DXGI_FORMAT_R8G8B8A8_UNORM,
-							.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-							.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
-						});
-					},
-					.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
-					{
-						RenderGraphInput& input = self.GetInput("input");
-						CmdCopyTexture2D(command_list, frame_data.get_render_target(), input.GetD3D12Resource());
-						CmdBarrier(command_list, frame_data.get_render_target(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-					},
-				});
-
-				render_graph.AddNode(RenderGraphNodeDesc
-				{
-					.name = "present_node",
-					.setup = [](RenderGraphNode& self)
-					{},
-					.execute = [&command_queue, &frame_data](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
-					{
-						HR_CHECK(command_list->Close()); //TODO: REMOVE
-
-						ID3D12CommandList* ppCommandLists[] = { command_list.Get() };
-						command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-
-						// Present the frame.
-						frame_data.present();
-						frame_data.wait_for_previous_frame(command_queue);
-					},
-				});
-
-				// Add connection
-				render_graph.AddEdge(RenderGraphEdge
-				{
-					.incoming_node = "first_node",
-					.incoming_resource = "color",
-					.outgoing_node = "copy_to_backbuffer",
-					.outgoing_resource = "input",
-				});
-
-				// Add connection with no resources
-				render_graph.AddEdge(RenderGraphEdge
-				{
-					.incoming_node = "copy_to_backbuffer",
-					.incoming_resource = STL_IMPL::nullopt,
-					.outgoing_node = "present_node",
-					.outgoing_resource = STL_IMPL::nullopt,
-				});
-
-				// Execute the render graph
-				render_graph.Execute();
-
-				//FCS TODO: Pipeline isn't living long enough.
-				//FCS TODO: Each Render Graph needs to live until it's frame has completed.
-				//^ Add some way to keep resources around until a specific frame is done rendering.
-				wait_gpu_idle(device, command_queue);
-			}
-			else
+			const DXGI_FORMAT color_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			const D3D12_CLEAR_VALUE clear_color =
 			{
-				// Raytracing
-				HR_CHECK(frame_data.get_command_allocator()->Reset());
-				HR_CHECK(command_list->Reset(frame_data.get_command_allocator(), nullptr));
+				.Format = color_format,
+				.Color = { 0.39f, 0.58f, 0.93f, 1.0f },
+			};
 
-				D3D12_RESOURCE_BARRIER begin_raytracing_barriers[] =
+			const DXGI_FORMAT depth_format = DXGI_FORMAT_D32_FLOAT;
+			const D3D12_CLEAR_VALUE clear_depth =
+			{
+				.Format = depth_format,
+				.DepthStencil =
 				{
-					Transition(raytracing_output_texture.GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
-				};
-				command_list->ResourceBarrier(_countof(begin_raytracing_barriers), begin_raytracing_barriers);
+					.Depth = 1.0f,
+					.Stencil = 0,
+				},
+			};
 
-				CmdBarrier(command_list, raytracing_output_texture.GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+			// Static to prevent cleanup. TODO: pool these in some manager.
+			static ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
+				.with_root_signature(global_root_signature)
+				.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
+				.with_ps(CompilePixelShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodePixelShader"))
+				.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
+				.with_depth_enabled(true)
+				.with_dsv_format(depth_format)
+				.with_rtv_formats({ color_format })
+				.with_debug_name(L"first_node_pipeline_state")
+			.build(device);
 
-				// Bind the heaps, acceleration structure and dispatch rays.    
-				command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
-				command_list->SetComputeRootSignature(global_root_signature.Get());
-
-				command_list->SetPipelineState1(dxr_state_object.Get());
-				command_list->SetComputeRootDescriptorTable(0, bindless_resource_manager.GetGpuHandle());
-				command_list->SetComputeRootConstantBufferView(1, global_constant_buffers[frame_data.frame_index].GetGPUVirtualAddress());
-
-
-				D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
-				// Since each shader table has only one shader record, the stride is same as the size.
-				dispatchDesc.HitGroupTable.StartAddress = hit_group_shader_table.GetResource()->GetGPUVirtualAddress();
-				dispatchDesc.HitGroupTable.SizeInBytes = hit_group_shader_table.GetResource()->GetDesc().Width;
-				dispatchDesc.HitGroupTable.StrideInBytes = dispatchDesc.HitGroupTable.SizeInBytes;
-				dispatchDesc.MissShaderTable.StartAddress = miss_shader_table.GetResource()->GetGPUVirtualAddress();
-				dispatchDesc.MissShaderTable.SizeInBytes = miss_shader_table.GetResource()->GetDesc().Width;
-				dispatchDesc.MissShaderTable.StrideInBytes = dispatchDesc.MissShaderTable.SizeInBytes;
-				dispatchDesc.RayGenerationShaderRecord.StartAddress = raygen_shader_table.GetResource()->GetGPUVirtualAddress();
-				dispatchDesc.RayGenerationShaderRecord.SizeInBytes = raygen_shader_table.GetResource()->GetDesc().Width;
-				dispatchDesc.Width = static_cast<UINT>(width);
-				dispatchDesc.Height = static_cast<UINT>(height);
-				dispatchDesc.Depth = 1;
-				command_list->DispatchRays(&dispatchDesc);
-
-				//Copy to Backbuffer
-				ID3D12Resource* current_render_target = frame_data.get_render_target();
-				D3D12_RESOURCE_BARRIER finish_raytracing_barriers[] =
+			//Add some nodes
+			render_graph.AddNode(RenderGraphNodeDesc
+			{
+				.name = "first_node",
+				.setup = [&](RenderGraphNode& self)
 				{
-					Transition(current_render_target, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
-					Transition(raytracing_output_texture.GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
-				};
-				command_list->ResourceBarrier(_countof(finish_raytracing_barriers), finish_raytracing_barriers);
-				command_list->CopyResource(current_render_target, raytracing_output_texture.GetResource());
+					self.AddTextureOutput("color", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = color_format,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
+						.optimized_clear_value = clear_color,
+					});
 
-				// Indicate that the back buffer will now be used to present.
-				D3D12_RESOURCE_BARRIER rt_to_present_barrier = Transition(frame_data.get_render_target(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-				command_list->ResourceBarrier(1, &rt_to_present_barrier);
+					self.AddTextureOutput("depth", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = depth_format,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+						.resource_state = D3D12_RESOURCE_STATE_DEPTH_WRITE,
+						.optimized_clear_value = clear_depth,
+					});
+				},
+				.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
+				{
+					command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
+					command_list->SetGraphicsRootSignature(global_root_signature.Get());
+					command_list->SetPipelineState(first_node_pipeline_state.Get());
 
-				HR_CHECK(command_list->Close());
+					command_list->SetGraphicsRootConstantBufferView(0, global_constant_buffers[frame_data.current_backbuffer_index].GetGPUVirtualAddress());
 
-				// Execute the command list.
-				ID3D12CommandList* ppCommandLists[] = { command_list.Get() };
-				command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+					RenderGraphOutput& color_output = self.GetOutput("color");
+					D3D12_CPU_DESCRIPTOR_HANDLE& rtv_handle = color_output.GetRtvHandle(device);
+					RenderGraphOutput& depth_output = self.GetOutput("depth");
+					D3D12_CPU_DESCRIPTOR_HANDLE& depth_handle = depth_output.GetDsvHandle(device);
 
-				// Present the frame.
-				frame_data.present();
-				frame_data.wait_for_previous_frame(command_queue);
-			}
+					command_list->OMSetRenderTargets(1, &rtv_handle, FALSE, &depth_handle);
+					command_list->ClearRenderTargetView(rtv_handle, clear_color.Color, 0, nullptr);
+					command_list->ClearDepthStencilView(depth_handle, D3D12_CLEAR_FLAG_DEPTH, clear_depth.DepthStencil.Depth, 0, 0, nullptr);
+					command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+					D3D12_VIEWPORT viewport =
+					{
+						.TopLeftX = 0.0f,
+						.TopLeftY = 0.0f,
+						.Width = static_cast<FLOAT>(render_width),
+						.Height = static_cast<FLOAT>(render_height),
+						.MinDepth = 0.0f,
+						.MaxDepth = 1.0f,
+					};
+					command_list->RSSetViewports(1, &viewport);
+
+					const D3D12_RECT scissor =
+					{
+						.left = 0,
+						.top = 0,
+						.right = (LONG) render_width,
+						.bottom = (LONG) render_height,
+					};
+					command_list->RSSetScissorRects(1, &scissor);
+					command_list->DrawInstanced(num_indices, 1, 0, 0);
+				},
+			});
+
+			render_graph.AddNode(RenderGraphNodeDesc
+			{
+				.name = "convert_to_grayscale",
+				.setup = [&](RenderGraphNode& self)
+				{
+					self.AddTextureInput("input", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = DXGI_FORMAT_R8G8B8A8_UNORM,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
+					});
+
+					self.AddTextureOutput("output", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = DXGI_FORMAT_R8G8B8A8_UNORM,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
+						.optimized_clear_value = clear_color,
+					});
+				},
+				.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
+				{
+					//FCS TODO: Need way to pass uniforms to shaders?
+					//FCS TODO: Just use PSO root constants
+					//FCS TODO: Compute shader to convert input to grayscale output
+				},
+			});
+
+			render_graph.AddNode(RenderGraphNodeDesc
+			{
+				.name = "copy_to_backbuffer",
+				.setup = [&](RenderGraphNode& self)
+				{
+					self.AddTextureInput("input", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = DXGI_FORMAT_R8G8B8A8_UNORM,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
+					});
+				},
+				.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
+				{
+					RenderGraphInput& input = self.GetInput("input");
+					CmdCopyTexture2D(command_list, frame_data.get_render_target(), input.GetD3D12Resource());
+					CmdBarrier(command_list, frame_data.get_render_target(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+				},
+			});
+
+			render_graph.AddNode(RenderGraphNodeDesc
+			{
+				.name = "present_node",
+				.setup = [](RenderGraphNode& self)
+				{},
+				.execute = [&command_queue, &frame_data](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
+				{
+					HR_CHECK(command_list->Close()); //TODO: REMOVE
+
+					ID3D12CommandList* ppCommandLists[] = { command_list.Get() };
+					command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+					// Present the frame.
+					frame_data.present();
+				},
+			});
+
+			// Add connection
+			render_graph.AddEdge(RenderGraphEdge
+			{
+				.incoming_node = "first_node",
+				.incoming_resource = "color",
+				.outgoing_node = "copy_to_backbuffer",
+				.outgoing_resource = "input",
+			});
+
+			// Add connection with no resources
+			render_graph.AddEdge(RenderGraphEdge
+			{
+				.incoming_node = "copy_to_backbuffer",
+				.incoming_resource = STL_IMPL::nullopt,
+				.outgoing_node = "present_node",
+				.outgoing_resource = STL_IMPL::nullopt,
+			});
+
+			// Execute the render graph
+			render_graph.Execute();
+			// Prevent graph from being cleaned up until the frame is done presenting
+			frame_data.register_graph(move(render_graph));
+			// Potentially wait for a frame to free up
+			frame_data.wait_for_previous_frame(command_queue);
 		}
 
 		if (IsKeyPressed(VK_ESCAPE))
@@ -1454,8 +893,5 @@ int main()
 	wait_gpu_idle(device, command_queue);
 
 	frame_data.reset();
-
-	//TODO: More Resource Cleanup here
-
 	return 0;
 }
