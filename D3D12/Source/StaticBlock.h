@@ -63,7 +63,7 @@
  *
  *   static_block {
  *         do_stuff();
- *         std::cout << "in the static block!\n";
+ *         printf("Stuff was done in static block\n");
  *   }
  *
  */

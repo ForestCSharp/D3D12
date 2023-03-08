@@ -34,16 +34,14 @@ public:
 	GpuBuffer() {}
 	GpuBuffer(const GpuBufferDesc& in_desc)
 	{
-		assert(in_desc.allocator);
-		assert(in_desc.size > 0);
-
-		D3D12MA::ALLOCATION_DESC alloc_desc = {};
-		alloc_desc.HeapType = in_desc.heap_type;
+		m_buffer_desc = in_desc;
+		assert(m_buffer_desc.allocator);
+		assert(m_buffer_desc.size > 0);
 
 		m_resource_desc = {};
 		m_resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		m_resource_desc.Alignment = 0;
-		m_resource_desc.Width = in_desc.size;
+		m_resource_desc.Width = m_buffer_desc.size;
 		m_resource_desc.Height = 1;
 		m_resource_desc.DepthOrArraySize = 1;
 		m_resource_desc.MipLevels = 1;
@@ -51,16 +49,10 @@ public:
 		m_resource_desc.SampleDesc.Count = 1;
 		m_resource_desc.SampleDesc.Quality = 0;
 		m_resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		m_resource_desc.Flags = in_desc.resource_flags;
+		m_resource_desc.Flags = m_buffer_desc.resource_flags;
 
-		HR_CHECK(in_desc.allocator->CreateResource(
-			&alloc_desc,
-			&m_resource_desc,
-			in_desc.resource_state,
-			nullptr,
-			&m_allocation,
-			IID_PPV_ARGS(&m_resource)
-		));
+		// Actually allocate our buffer
+		Resize(m_buffer_desc.size);
 	};
 
 	bool IsValid() { return m_resource != nullptr && m_resource_desc.Width > 0; }
@@ -68,6 +60,11 @@ public:
 	size_t GetSize() const { return m_resource_desc.Width; }
 	DXGI_FORMAT GetFormat() const { return m_resource_desc.Format; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GetResource()->GetGPUVirtualAddress(); }
+	uint32_t GetBindlessResourceIndex() const
+	{
+		assert(m_bindless_resource_index.has_value());
+		return *m_bindless_resource_index;
+	}
 
 	void Map(void** ppData)
 	{
@@ -77,7 +74,13 @@ public:
 
 	void Write(void* in_data, size_t data_size)
 	{
+		if (data_size > GetSize())
+		{
+			Resize(data_size);
+		}
+
 		//TODO: check/assert that this buffer is cpu writeable...
+		assert(data_size <= GetSize());
 		UINT8* mapped_data = nullptr;
 		D3D12_RANGE read_range = { 0, 0 };
 		HR_CHECK(m_resource->Map(0, &read_range, reinterpret_cast<void**>(&mapped_data)));
@@ -85,7 +88,26 @@ public:
 		m_resource->Unmap(0, nullptr);
 	}
 
+	void Resize(size_t new_size)
+	{
+		m_buffer_desc.size = new_size;
+		m_resource_desc.Width = new_size;
+
+		D3D12MA::ALLOCATION_DESC alloc_desc = {};
+		alloc_desc.HeapType = m_buffer_desc.heap_type;
+
+		HR_CHECK(m_buffer_desc.allocator->CreateResource(
+			&alloc_desc,
+			&m_resource_desc,
+			m_buffer_desc.resource_state,
+			nullptr,
+			&m_allocation,
+			IID_PPV_ARGS(&m_resource)
+		));
+	}
+
 protected:
+	GpuBufferDesc m_buffer_desc = {};
 	D3D12_RESOURCE_DESC m_resource_desc = {};
 	ComPtr<ID3D12Resource> m_resource;
 	ComPtr<D3D12MA::Allocation> m_allocation;
@@ -102,7 +124,7 @@ struct GpuTextureDesc
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	D3D12_RESOURCE_FLAGS resource_flags = D3D12_RESOURCE_FLAG_NONE;
 	D3D12_RESOURCE_STATES resource_state = D3D12_RESOURCE_STATE_COMMON;
-	optional<D3D12_CLEAR_VALUE> optimized_clear_value = STL_IMPL::nullopt;
+	optional<D3D12_CLEAR_VALUE> optimized_clear_value = std::nullopt;
 };
 
 struct GpuTexture
@@ -287,7 +309,7 @@ protected:
 		{
 			descriptor_index_to_use = m_num_descriptors_allocated++;
 		}
-		assert(descriptor_index_to_use != UINT_MAX);
+		assert(descriptor_index_to_use < NUM_BINDLESS_DESCRIPTORS_PER_TYPE);
 
 		D3D12_CPU_DESCRIPTOR_HANDLE descriptor_handle = m_descriptor_heap->GetCPUDescriptorHandleForHeapStart();
 		INT64 cpu_descriptor_heap_offset = INT64(descriptor_index_to_use) * INT64(m_descriptor_size);

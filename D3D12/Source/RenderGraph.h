@@ -2,14 +2,26 @@
 
 #include <cassert>
 #include <cstdint>
-#include <d3d12.h>
-#include <functional>
-#include <optional> 
-#include <string>
-#include <unordered_map>
+
 #include <map>
-#include <variant>
 #include <vector>
+#include <string>
+#include <optional>
+#include <functional>
+#include <variant>
+
+#include <unordered_map>
+
+using std::optional;
+using std::string;
+using std::function;
+using std::variant;
+using std::get_if;
+using std::vector;
+using std::unordered_map;
+using std::multimap;
+
+#include <d3d12.h>
 #include <wrl.h>
 
 #include "D3D12MemAlloc/D3D12MemAlloc.h"
@@ -19,15 +31,6 @@
 #include "Common.h"
 
 using Microsoft::WRL::ComPtr;
-
-using STL_IMPL::optional;
-using STL_IMPL::string;
-using STL_IMPL::function;
-using STL_IMPL::vector;
-using STL_IMPL::unordered_map;
-using STL_IMPL::multimap;
-using STL_IMPL::variant;
-using STL_IMPL::get_if;
 
 struct RenderGraphBufferDesc
 {
@@ -67,7 +70,7 @@ struct RenderGraphTextureDesc
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	D3D12_RESOURCE_FLAGS resource_flags = D3D12_RESOURCE_FLAG_NONE;
 	D3D12_RESOURCE_STATES resource_state = D3D12_RESOURCE_STATE_COMMON;
-	optional<D3D12_CLEAR_VALUE> optimized_clear_value = STL_IMPL::nullopt;
+	optional<D3D12_CLEAR_VALUE> optimized_clear_value = std::nullopt;
 };
 
 struct RenderGraphTexture
@@ -263,9 +266,9 @@ struct RenderGraphInput
 
 	D3D12_RESOURCE_STATES GetResourceState()
 	{
-		return	STL_IMPL::holds_alternative<RenderGraphBufferDesc>(desc)
-			? STL_IMPL::get<RenderGraphBufferDesc>(desc).resource_state
-			: STL_IMPL::get<RenderGraphTextureDesc>(desc).resource_state;
+		return	std::holds_alternative<RenderGraphBufferDesc>(desc)
+			? std::get<RenderGraphBufferDesc>(desc).resource_state
+			: std::get<RenderGraphTextureDesc>(desc).resource_state;
 	}
 
 	variant<RenderGraphBufferDesc, RenderGraphTextureDesc> desc;

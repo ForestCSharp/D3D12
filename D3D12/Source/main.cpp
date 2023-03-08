@@ -1,13 +1,10 @@
 #define WIN32_LEAN_AND_MEAN
+#define _CRT_SECURE_NO_WARNINGS
 
 // FCS TODO:
-// Render Graph
 // Standardize formatting
 // EASTL
 // Remove m_ from member vars
-// Make sure agility sdk is set up
-// Rename sln / project and setup Github repo
-// More cpp files, move defs into cpp
 
 #include "GpuCommands.h"
 #include "RenderGraph.h"
@@ -21,21 +18,24 @@
 #include <DirectXMath.h>
 #include <wrl.h>
 #include <cstdio>
-#include <vector>
-#include <optional>
 
 #include "SimpleMath/SimpleMath.h"
 using namespace DirectX::SimpleMath;
+
+#include <vector>
+#include <unordered_map>
+#include <string>
 
 #include "Common.h"
 #include "GpuResources.h"
 #include "GpuPipelines.h"
 #include "../Shaders/HLSL_Types.h"
 
-using STL_IMPL::optional;
-using STL_IMPL::vector;
-using STL_IMPL::wstring;
-using STL_IMPL::move;
+#include "GltfScene.h"
+
+using std::vector;
+using std::wstring;
+using std::move;
 using Microsoft::WRL::ComPtr;
 
 static constexpr UINT frame_count = 3;
@@ -44,40 +44,12 @@ static constexpr UINT frame_count = 3;
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 706; }
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
 
-float randf()
-{
-	return static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-}
-
-float map(float input_number, float input_min, float input_max, float ouptut_min, float output_max)
-{
-	return ouptut_min + (input_number - input_min) * (output_max - ouptut_min) / (input_max - input_min);
-}
-
-float rand_range(float min, float max)
-{
-	return map(randf(), 0.0f, 1.0f, min, max);
-}
-
 bool IsKeyPressed(int in_key)
 {
 	return GetKeyState(in_key) < 0;
 }
 
 #define ROUND_UP(num, multiple) ((num + multiple - 1) / multiple) * multiple
-
-inline void wait_gpu_idle(ComPtr<ID3D12Device> device, ComPtr<ID3D12CommandQueue> command_queue)
-{
-	ComPtr<ID3D12Fence> fence;
-	HR_CHECK(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
-
-	const HANDLE fence_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-	assert(fence_event);
-
-	HR_CHECK(command_queue->Signal(fence.Get(), 1));
-	HR_CHECK(fence->SetEventOnCompletion(1, fence_event));
-	WaitForSingleObject(fence_event, INFINITE);
-}
 
 const wchar_t* hit_group_name = L"MyHitGroup";
 const wchar_t* raygen_shader_name = L"Raygen";
@@ -391,6 +363,16 @@ int main()
 	HR_CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frame_data.get_command_allocator(), nullptr, IID_PPV_ARGS(&command_list)));
 	HR_CHECK(command_list->Close());
 
+	BindlessResourceManager bindless_resource_manager(device);
+
+	GltfInitData gltf_init_data = {
+		.device = device,
+		.allocator = gpu_memory_allocator,
+		.command_queue = command_queue,
+		.bindless_resource_manager = &bindless_resource_manager,
+	};
+	GltfScene FlyingWorldScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
+
 	//Create The Vertex Buffer, copy vertices into it
 	Vertex mesh_vertices[] =
 	{
@@ -489,8 +471,6 @@ int main()
 		global_constant_buffer.Write(&global_constant_buffer_data, sizeof(GlobalConstantBuffer));
 		global_constant_buffers[current_backbuffer_index] = global_constant_buffer;
 	}
-
-	BindlessResourceManager bindless_resource_manager(device);
 	
 	ComPtr<ID3D12RootSignature> global_root_signature;
 	{
@@ -518,7 +498,20 @@ int main()
 				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
 			};
 
-			D3D12_ROOT_PARAMETER root_params[] = { scene_cbv_root_param };
+			//TODO: Replace need for this with an indirect draw?
+			D3D12_ROOT_PARAMETER instance_index_root_param =
+			{
+				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+				.Constants =
+				{
+					.ShaderRegister = 1,
+					.RegisterSpace = 0,
+					.Num32BitValues = 1,
+				},
+				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+			};
+
+			D3D12_ROOT_PARAMETER root_params[] = { scene_cbv_root_param, instance_index_root_param };
 
 			D3D12_ROOT_SIGNATURE_DESC root_signature_desc = 
 			{
@@ -547,13 +540,7 @@ int main()
 	global_constant_buffer_data.frames_rendered = 0;
 
 	/** Gpu Scene (array of instances) */
-	vector<GpuInstanceData> instances;
-	instances.push_back(GpuInstanceData
-	{
-		.world_matrix = Matrix::Identity(),
-		.vertex_buffer_index = vertex_buffer_index,
-		.index_buffer_index = index_buffer_index,
-	});
+	vector<GpuInstanceData>& instances = FlyingWorldScene.gpu_instance_array;
 	const size_t instances_buffer_size = instances.size() * sizeof(GpuInstanceData);
 	GpuBuffer instances_buffer(GpuBufferDesc{
 		.allocator = gpu_memory_allocator,
@@ -612,7 +599,7 @@ int main()
 		else if (IsKeyPressed(VK_LBUTTON))
 		{
 			// Camera rotation
-			const float speed = 0.0025f;
+			const float speed = 0.0025f; //TODO: delta_time
 			const Vector3 cam_right = Cross(cam_forward, cam_up);
 			const Quaternion quat_pitch = Quaternion::CreateFromAxisAngle(cam_right, -1.0f * speed * mouse_delta.y);
 			const Quaternion quat_yaw = Quaternion::CreateFromAxisAngle(cam_up, -1.0f * speed * mouse_delta.x);
@@ -626,7 +613,7 @@ int main()
 
 		// Basic Fly-Camera
 		{
-			float move_speed = 0.5f; //TODO: delta_time
+			float move_speed = 7.5f; //TODO: delta_time
 			if (IsKeyPressed(VK_SHIFT)) { move_speed *= 10.0f; }
 
 			const Vector3 cam_right = Cross(cam_forward, cam_up);
@@ -656,7 +643,7 @@ int main()
 
 			float fieldOfView = 3.14159f / 4.0f; //PI / 4 : 90 degrees
 			float aspectRatio = (float) render_width / (float) render_height;
-			const Matrix proj = Matrix::CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, 0.01f, 10000.0f);
+			const Matrix proj = Matrix::CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, 1.f, 50000.0f);
 			global_constant_buffer_data.projection = proj;
 			global_constant_buffer_data.projection_inverse = proj.Invert();
 		}
@@ -678,10 +665,6 @@ int main()
 			HR_CHECK(frame_data.get_command_allocator()->Reset());
 			HR_CHECK(command_list->Reset(frame_data.get_command_allocator(), nullptr));
 
-			// FCS TODO: Basic Test (3 nodes)
-			// 1. [DONE] Rasterize scene in color, output that texture
-			// 2. [TODO] convert to grayscale
-			// 3. [DONE] copy to swapchain + present
 			// Render Graph Testing
 			RenderGraph render_graph(RenderGraphDesc
 			{
@@ -708,7 +691,7 @@ int main()
 				},
 			};
 
-			// Static to prevent cleanup. TODO: pool these in some manager.
+			// Static to prevent cleanup / recreation. TODO: pool these in some manager.
 			static ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
 				.with_root_signature(global_root_signature)
 				.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
@@ -783,7 +766,15 @@ int main()
 						.bottom = (LONG) render_height,
 					};
 					command_list->RSSetScissorRects(1, &scissor);
-					command_list->DrawInstanced(num_indices, 1, 0, 0);
+
+					//FCS TODO: Indirect Draw (build command signature per-GLTF-scene)
+					for (uint32_t instance_index = 0; instance_index < instances.size(); ++instance_index)
+					{
+						auto& instance = instances[instance_index];
+						//FCS TODO: Move index_count out of GPU data?
+						command_list->SetGraphicsRoot32BitConstant(1, instance_index, 0);
+						command_list->DrawInstanced(instance.index_count, 1, 0, 0);
+					}
 				},
 			});
 

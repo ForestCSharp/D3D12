@@ -31,11 +31,12 @@ struct uint2 { uint x, y; };
 
 struct Vertex
 {
-    float3 position;
-    float3 normal;
-    float3 color;
+	float3 position;
+	float3 normal;
+	float3 color;
 
 #ifdef __cplusplus
+	Vertex() = default;
     Vertex(float3 position, float3 normal, float3 color)
         : position(position)
         , normal(normal)
@@ -54,9 +55,10 @@ struct Viewport
 
 struct GpuInstanceData
 {
-    float4x4 world_matrix;
+    float4x4 transform;
     uint vertex_buffer_index;
     uint index_buffer_index;
+	uint index_count;
 };
 
 struct GlobalConstantBuffer
@@ -78,8 +80,6 @@ struct GlobalConstantBuffer
     // Gpu Scene
     uint instance_buffer_index;
     uint instance_buffer_count;
-    // uint draw_to_instance_buffer_index; //Maps DrawInstanced instance ID to an index in instance_buffer
-    // uint draw_to_instance_buffer_count;
 };
 
 struct RayPayload
@@ -87,6 +87,6 @@ struct RayPayload
     float4 color;
 };
 
-static uint NUM_BINDLESS_DESCRIPTORS_PER_TYPE = 8192;
+static uint NUM_BINDLESS_DESCRIPTORS_PER_TYPE = 32768;
 
 #endif // RAYTRACINGHLSLCOMPAT_H
