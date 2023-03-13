@@ -58,7 +58,18 @@ struct GpuInstanceData
     float4x4 transform;
     uint vertex_buffer_index;
     uint index_buffer_index;
-	uint index_count;
+};
+
+#ifdef __cplusplus
+#define INDIRECT_DRAW_ARGS D3D12_DRAW_ARGUMENTS
+#else
+#define INDIRECT_DRAW_ARGS uint4
+#endif
+
+struct IndirectDrawData
+{
+	uint instance_index;
+	INDIRECT_DRAW_ARGS draw_arguments;
 };
 
 struct GlobalConstantBuffer

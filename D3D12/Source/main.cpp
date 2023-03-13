@@ -249,8 +249,24 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 	return DefWindowProc(window, message, wParam, lParam);
 }
 
+#include "ThreadPool.h"
+//FCS TODO: Use Thread pool to load GLTFScene (launch 1 task per node)
+
 int main()
 {
+	//{	//FCS TODO: Testing Thread Pool
+		ThreadPool thread_pool(4);
+
+		thread_pool.PostTask([]()
+		{
+			for (int32_t i = 0; i < 5000; ++i)
+			{
+				printf("i: %i\n", i);
+				Sleep(1000);
+			}
+		});
+	//}
+
 	//FCS TODO BEGIN: Organize all these variables (set them up as created farther down)
 	ComPtr<IDXGIFactory4> factory;
 	ComPtr<IDXGIAdapter1> adapter;
@@ -526,6 +542,33 @@ int main()
 		}
 	}
 
+	// Create command signature for indirect draws
+	ComPtr<ID3D12CommandSignature> indirect_command_signature;
+	{
+		D3D12_INDIRECT_ARGUMENT_DESC argument_descs[2] = {
+			{
+				.Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+				.Constant = {
+					.RootParameterIndex = 1,
+					.DestOffsetIn32BitValues = 0,
+					.Num32BitValuesToSet = 1,
+				},
+			},
+			{
+				.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+			},
+		};
+
+		D3D12_COMMAND_SIGNATURE_DESC command_signature_desc = {
+			.ByteStride = sizeof(IndirectDrawData),
+			.NumArgumentDescs = _countof(argument_descs),
+			.pArgumentDescs = argument_descs,
+			.NodeMask = 0,
+		};
+
+		HR_CHECK(device->CreateCommandSignature(&command_signature_desc, global_root_signature.Get(), IID_PPV_ARGS(&indirect_command_signature)));
+	}
+
 	const UINT32 index_buffer_index = bindless_resource_manager.RegisterSRV(index_buffer, num_indices, sizeof(uint32_t));
 	const UINT32 vertex_buffer_index = bindless_resource_manager.RegisterSRV(vertex_buffer, num_vertices, sizeof(Vertex));
 
@@ -766,15 +809,8 @@ int main()
 						.bottom = (LONG) render_height,
 					};
 					command_list->RSSetScissorRects(1, &scissor);
-
-					//FCS TODO: Indirect Draw (build command signature per-GLTF-scene)
-					for (uint32_t instance_index = 0; instance_index < instances.size(); ++instance_index)
-					{
-						auto& instance = instances[instance_index];
-						//FCS TODO: Move index_count out of GPU data?
-						command_list->SetGraphicsRoot32BitConstant(1, instance_index, 0);
-						command_list->DrawInstanced(instance.index_count, 1, 0, 0);
-					}
+					UINT instance_count = (UINT) instances.size();
+					command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, FlyingWorldScene.indirect_draw_buffer.GetResource(), 0, nullptr, 0);
 				},
 			});
 

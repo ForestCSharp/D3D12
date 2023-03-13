@@ -28,6 +28,22 @@ using Microsoft::WRL::ComPtr;
 
 #define STL_IMPL std
 
+#define DISALLOW_COPY(CLASS)                    \
+	CLASS(const CLASS&) = delete;               \
+	CLASS& operator=(const CLASS&) = delete
+
+#define DEFAULT_COPY(CLASS)                 	\
+	CLASS(const CLASS&) = default;              \
+	CLASS& operator=(const CLASS&) = default
+
+#define DISALLOW_MOVE(CLASS)                    \
+	CLASS(CLASS&&) = delete;                    \
+	CLASS& operator=(CLASS&&) = delete
+
+#define DEFAULT_MOVE(CLASS)                    \
+	CLASS(CLASS&&) = default;                  \
+	CLASS& operator=(CLASS&&) = default
+
 inline void wait_gpu_idle(ComPtr<ID3D12Device> device, ComPtr<ID3D12CommandQueue> command_queue)
 {
 	ComPtr<ID3D12Fence> fence;
