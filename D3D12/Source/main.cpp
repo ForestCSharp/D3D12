@@ -816,38 +816,6 @@ int main()
 
 			render_graph.AddNode(RenderGraphNodeDesc
 			{
-				.name = "convert_to_grayscale",
-				.setup = [&](RenderGraphNode& self)
-				{
-					self.AddTextureInput("input", RenderGraphTextureDesc
-					{
-						.width = render_width,
-						.height = render_height,
-						.format = DXGI_FORMAT_R8G8B8A8_UNORM,
-						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
-					});
-
-					self.AddTextureOutput("output", RenderGraphTextureDesc
-					{
-						.width = render_width,
-						.height = render_height,
-						.format = DXGI_FORMAT_R8G8B8A8_UNORM,
-						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
-						.optimized_clear_value = clear_color,
-					});
-				},
-				.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
-				{
-					//FCS TODO: Need way to pass uniforms to shaders?
-					//FCS TODO: Just use PSO root constants
-					//FCS TODO: Compute shader to convert input to grayscale output
-				},
-			});
-
-			render_graph.AddNode(RenderGraphNodeDesc
-			{
 				.name = "copy_to_backbuffer",
 				.setup = [&](RenderGraphNode& self)
 				{

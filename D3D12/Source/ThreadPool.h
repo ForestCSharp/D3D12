@@ -33,28 +33,6 @@
 
 #include "Common.h"
 
-template<typename C>
-class ThreadsJoiner {
-public:
-    explicit ThreadsJoiner(C& threads) noexcept
-        : threads_(threads)
-    {}
-
-    ~ThreadsJoiner()
-    {
-        for (auto& th : threads_) {
-            th.join();
-        }
-    }
-
-    DISALLOW_COPY(ThreadsJoiner);
-
-    DEFAULT_MOVE(ThreadsJoiner);
-
-private:
-    C& threads_;
-};
-
 enum class TaskShutdownBehavior {
     BlockShutdown,
     SkipOnShutdown
@@ -66,8 +44,6 @@ private:
 
 public:
 	explicit ThreadPool(size_t num)
-	: running_(true)
-	, thread_joiner_(threads_)
 	{
 		threads_.reserve(num);
 		for (size_t i = 0; i < num; ++i) {
@@ -83,12 +59,25 @@ public:
 		}
 	
 		not_empty_.notify_all();
+
+		for (std::thread& th : threads_) 
+		{
+			th.join();
+		}
 	}
 
     DISALLOW_COPY(ThreadPool);
 
-    template<typename F, typename... Args>
+	template<typename F, typename... Args>
 	std::future<std::invoke_result_t<F,Args...>> PostTask(F&& fn, Args&&... args)
+	{
+		return PostTaskWithShutdownBehavior(TaskShutdownBehavior::SkipOnShutdown,
+		                                    std::forward<F>(fn),
+		                                    std::forward<Args>(args)...);
+	}
+
+    template<typename F, typename... Args>
+	std::future<std::invoke_result_t<F,Args...>> PostBlockingTask(F&& fn, Args&&... args)
     {
         return PostTaskWithShutdownBehavior(TaskShutdownBehavior::BlockShutdown,
                                             std::forward<F>(fn),
@@ -159,10 +148,9 @@ private:
 	}
 
 private:
+	bool running_ = true;
     std::mutex pool_mutex_;
     std::condition_variable not_empty_;
     std::deque<Task> task_queue_;
-    bool running_;
     std::vector<std::thread> threads_;
-    ThreadsJoiner<decltype(threads_)> thread_joiner_;
 };
