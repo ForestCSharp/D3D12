@@ -68,7 +68,16 @@ struct GpuInstanceData
 
 struct IndirectDrawData
 {
-	uint instance_index;
+	// Index in our resource descriptor heap to our instances buffer
+	uint instance_buffer_index;
+
+	// Which instance in our instance buffer are we drawing
+	uint instance_id;
+	
+	// Bindless index to instance buffer
+	//uint instance_buffer_index; //FCS TODO:
+
+	// Our actual Indirect Draw Args
 	INDIRECT_DRAW_ARGS draw_arguments;
 };
 
@@ -87,10 +96,6 @@ struct GlobalConstantBuffer
     uint tlas_buffer_index;
     uint frames_rendered;
     uint random;
-
-    // Gpu Scene
-    uint instance_buffer_index;
-    uint instance_buffer_count;
 };
 
 struct RayPayload

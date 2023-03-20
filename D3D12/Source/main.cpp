@@ -32,6 +32,7 @@ using namespace DirectX::SimpleMath;
 #include "../Shaders/HLSL_Types.h"
 
 #include "GltfScene.h"
+#include "ThreadPool.h"
 
 using std::vector;
 using std::wstring;
@@ -249,33 +250,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 	return DefWindowProc(window, message, wParam, lParam);
 }
 
-#include "ThreadPool.h"
-//FCS TODO: Use Thread pool to load GLTFScene (launch 1 task per node)
-
 int main()
 {
-	//{	//FCS TODO: Testing Thread Pool
-		ThreadPool thread_pool(4);
-
-		thread_pool.PostTask([]()
-		{
-			for (int32_t i = 0; i < 5000; ++i)
-			{
-				printf("i: %i\n", i);
-				Sleep(1000);
-			}
-		});
-	//}
+	const size_t thread_count = max(1, std::thread::hardware_concurrency() - 1);
+	ThreadPool thread_pool(thread_count);
 
 	//FCS TODO BEGIN: Organize all these variables (set them up as created farther down)
 	ComPtr<IDXGIFactory4> factory;
 	ComPtr<IDXGIAdapter1> adapter;
 	ComPtr<ID3D12Device5> device;
-
-	ComPtr<ID3D12CommandQueue> command_queue;
-
 	//FCS TODO END
-	
+
 	// 1. Create Our Window
 	HINSTANCE h_instance = GetModuleHandle(nullptr);
 
@@ -290,7 +275,7 @@ int main()
 
 	UINT render_width = 1280;
 	UINT render_height = 720;
-	RECT window_rect = { 0, 0, static_cast<LONG>(render_width), static_cast<LONG>(render_height)};
+	RECT window_rect = { 0, 0, static_cast<LONG>(render_width), static_cast<LONG>(render_height) };
 	AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
 
 	HWND window = CreateWindow(
@@ -319,7 +304,7 @@ int main()
 	HR_CHECK(CreateDXGIFactory2(dxgi_factory_flags, IID_PPV_ARGS(&factory)));
 	for (UINT adapter_index = 0; DXGI_ERROR_NOT_FOUND != factory->EnumAdapters1(adapter_index, &adapter); ++adapter_index)
 	{
-		DXGI_ADAPTER_DESC1 desc = {0};
+		DXGI_ADAPTER_DESC1 desc = { 0 };
 		adapter->GetDesc1(&desc);
 
 		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
@@ -356,14 +341,21 @@ int main()
 
 	D3D12MA::Allocator* gpu_memory_allocator = nullptr;
 	HR_CHECK(D3D12MA::CreateAllocator(&allocator_desc, &gpu_memory_allocator));
-	
+
 	// 3. Create a command queue
 	D3D12_COMMAND_QUEUE_DESC queue_desc = {};
 	queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 	queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+	ComPtr<ID3D12CommandQueue> command_queue;
 	HR_CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue)));
 
-	FrameDataDesc frame_data_create_info = 
+	D3D12_COMMAND_QUEUE_DESC copy_queue_desc = {};
+	copy_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+	copy_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+	ComPtr<ID3D12CommandQueue> copy_queue;
+	HR_CHECK(device->CreateCommandQueue(&copy_queue_desc, IID_PPV_ARGS(&copy_queue)));
+
+	FrameDataDesc frame_data_create_info =
 	{
 		.width = render_width,
 		.height = render_height,
@@ -381,92 +373,6 @@ int main()
 
 	BindlessResourceManager bindless_resource_manager(device);
 
-	GltfInitData gltf_init_data = {
-		.device = device,
-		.allocator = gpu_memory_allocator,
-		.command_queue = command_queue,
-		.bindless_resource_manager = &bindless_resource_manager,
-	};
-	GltfScene FlyingWorldScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
-
-	//Create The Vertex Buffer, copy vertices into it
-	Vertex mesh_vertices[] =
-	{
-		// Top
-		Vertex(Vector3(1, 1,  1), Vector3(0, 1, 0), Vector3(1, 0, 0)),
-		Vertex(Vector3(1, 1, -1), Vector3(0, 1, 0), Vector3(1, 0, 0)),
-		Vertex(Vector3(-1, 1,  1), Vector3(0, 1, 0), Vector3(1, 0, 0)),
-		Vertex(Vector3(-1, 1, -1), Vector3(0, 1, 0), Vector3(1, 0, 0)),
-
-		// Positive X Side
-		Vertex(Vector3(1, 1, 1), Vector3(1, 0, 0), Vector3(0, 1, 0)),
-		Vertex(Vector3(1, 1, -1), Vector3(1, 0, 0), Vector3(0, 1, 0)),
-		Vertex(Vector3(1, -1, 1), Vector3(1, 0, 0), Vector3(0, 1, 0)),
-		Vertex(Vector3(1, -1, -1), Vector3(1, 0, 0), Vector3(0, 1, 0)),
-
-		// Negative X Side
-		Vertex(Vector3(-1, 1, 1), Vector3(-1, 0, 0), Vector3(0, 0, 1)),
-		Vertex(Vector3(-1, 1, -1), Vector3(-1, 0, 0), Vector3(0, 0, 1)),
-		Vertex(Vector3(-1, -1, 1), Vector3(-1, 0, 0), Vector3(0, 0, 1)),
-		Vertex(Vector3(-1, -1, -1), Vector3(-1, 0, 0), Vector3(0, 0, 1)),
-
-		// Positive Z Side
-		Vertex(Vector3(1, 1, 1), Vector3(0, 0, 1), Vector3(1, 1, 0)),
-		Vertex(Vector3(1, -1, 1), Vector3(0, 0, 1), Vector3(1, 1, 0)),
-		Vertex(Vector3(-1, 1, 1), Vector3(0, 0, 1), Vector3(1, 1, 0)),
-		Vertex(Vector3(-1, -1, 1), Vector3(0, 0, 1), Vector3(1, 1, 0)),
-
-		// Negative Z Side
-		Vertex(Vector3(1, 1, -1), Vector3(0, 0, -1), Vector3(0, 1, 1)),
-		Vertex(Vector3(1, -1, -1), Vector3(0, 0, -1), Vector3(0, 1, 1)),
-		Vertex(Vector3(-1, 1, -1), Vector3(0, 0, -1), Vector3(0, 1, 1)),
-		Vertex(Vector3(-1, -1, -1), Vector3(0, 0, -1), Vector3(0, 1, 1)),
-
-		// Bottom
-		Vertex(Vector3(-1, -1, -1), Vector3(0, -1, 0), Vector3(1, 1, 1)),
-		Vertex(Vector3(-1, -1,  1), Vector3(0, -1, 0), Vector3(1, 1, 1)),
-		Vertex(Vector3( 1, -1, -1), Vector3(0, -1, 0), Vector3(1, 1, 1)),
-		Vertex(Vector3( 1, -1,  1), Vector3(0, -1, 0), Vector3(1, 1, 1)),
-	};
-
-	const UINT vertex_buffer_size = sizeof(mesh_vertices);
-	const UINT num_vertices = vertex_buffer_size / sizeof(Vertex);
-	GpuBuffer vertex_buffer(GpuBufferDesc{
-		.allocator = gpu_memory_allocator,
-		.size = vertex_buffer_size,
-		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
-		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
-	});
-	vertex_buffer.Write(mesh_vertices, vertex_buffer_size);
-
-	// Index Buffer
-	uint32_t mesh_indices[] =
-	{
-		0, 1, 2,	// Side 0
-		2, 1, 3,
-		4, 6, 5,	// Side 1
-		6, 7, 5,
-		8, 9, 10,	// Side 2
-		10, 9, 11,
-		12, 14, 13, // Side 3
-		14, 15, 13,
-		16, 17, 18, // Side 4
-		18, 17, 19,
-		21, 20, 22, // Side 5
-		21, 22, 23,
-	};
-	const UINT index_buffer_size = sizeof(mesh_indices);
-	const UINT num_indices = index_buffer_size / sizeof(uint32_t);
-	GpuBuffer index_buffer(GpuBufferDesc{
-		.allocator = gpu_memory_allocator,
-		.size = index_buffer_size,
-		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
-		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ | D3D12_RESOURCE_STATE_INDEX_BUFFER
-	});
-	index_buffer.Write(mesh_indices, index_buffer_size);
-
 	// Constant Buffers
 	GlobalConstantBuffer global_constant_buffer_data =
 	{
@@ -483,11 +389,11 @@ int main()
 			.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 			.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 			.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
-		});
+			});
 		global_constant_buffer.Write(&global_constant_buffer_data, sizeof(GlobalConstantBuffer));
 		global_constant_buffers[current_backbuffer_index] = global_constant_buffer;
 	}
-	
+
 	ComPtr<ID3D12RootSignature> global_root_signature;
 	{
 		auto SerializeAndCreateRootSignature = [&](D3D12_ROOT_SIGNATURE_DESC& desc, ComPtr<ID3D12RootSignature>* p_root_signature)
@@ -522,14 +428,14 @@ int main()
 				{
 					.ShaderRegister = 1,
 					.RegisterSpace = 0,
-					.Num32BitValues = 1,
+					.Num32BitValues = 2,
 				},
 				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
 			};
 
 			D3D12_ROOT_PARAMETER root_params[] = { scene_cbv_root_param, instance_index_root_param };
 
-			D3D12_ROOT_SIGNATURE_DESC root_signature_desc = 
+			D3D12_ROOT_SIGNATURE_DESC root_signature_desc =
 			{
 				.NumParameters = _countof(root_params),
 				.pParameters = root_params,
@@ -551,7 +457,7 @@ int main()
 				.Constant = {
 					.RootParameterIndex = 1,
 					.DestOffsetIn32BitValues = 0,
-					.Num32BitValuesToSet = 1,
+					.Num32BitValuesToSet = 2,
 				},
 			},
 			{
@@ -569,9 +475,6 @@ int main()
 		HR_CHECK(device->CreateCommandSignature(&command_signature_desc, global_root_signature.Get(), IID_PPV_ARGS(&indirect_command_signature)));
 	}
 
-	const UINT32 index_buffer_index = bindless_resource_manager.RegisterSRV(index_buffer, num_indices, sizeof(uint32_t));
-	const UINT32 vertex_buffer_index = bindless_resource_manager.RegisterSRV(vertex_buffer, num_vertices, sizeof(Vertex));
-
 	Vector3 cam_pos = Vector3(5, 5, -5);
 	Vector3 cam_up = Vector3(0, 1, 0);
 	Vector3 cam_forward = Normalize(Vector3(0, 0, 1) - cam_pos);
@@ -582,19 +485,29 @@ int main()
 
 	global_constant_buffer_data.frames_rendered = 0;
 
-	/** Gpu Scene (array of instances) */
-	vector<GpuInstanceData>& instances = FlyingWorldScene.gpu_instance_array;
-	const size_t instances_buffer_size = instances.size() * sizeof(GpuInstanceData);
-	GpuBuffer instances_buffer(GpuBufferDesc{
-		.allocator = gpu_memory_allocator,
-		.size = instances_buffer_size,
-		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
-		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
+	// Load GLTF Scene
+	auto load_gltf_scene_future = thread_pool.PostTask([&]() {
+		GltfInitData gltf_init_data = {
+			.device = device,
+			.allocator = gpu_memory_allocator,
+			.command_queue = copy_queue,
+			.bindless_resource_manager = &bindless_resource_manager,
+		};
+		return GltfScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
 	});
-	instances_buffer.Write(instances.data(), instances_buffer_size);
-	global_constant_buffer_data.instance_buffer_index = bindless_resource_manager.RegisterSRV(instances_buffer, (UINT32) instances.size(), sizeof(GpuInstanceData));
-	global_constant_buffer_data.instance_buffer_count = (UINT32) instances.size();
+	
+	optional<GltfScene> gltf_scene;
+	auto get_scene_if_ready = [&]() -> optional<GltfScene>
+	{
+		if (!load_gltf_scene_future.valid() || load_gltf_scene_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+		{
+			return load_gltf_scene_future.get();
+		}
+
+		return std::nullopt;
+	};
+
+	//TODO: Helper class to wrap and query result of future with optional
 
 	while (!should_close)
 	{
@@ -809,8 +722,19 @@ int main()
 						.bottom = (LONG) render_height,
 					};
 					command_list->RSSetScissorRects(1, &scissor);
-					UINT instance_count = (UINT) instances.size();
-					command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, FlyingWorldScene.indirect_draw_buffer.GetResource(), 0, nullptr, 0);
+
+					
+					if (!gltf_scene.has_value())
+					{
+						gltf_scene = get_scene_if_ready();
+					}
+
+					if (gltf_scene.has_value())
+					{
+						/*GltfScene flying_world_scene = load_gltf_scene_future.get();*/
+						UINT instance_count = (UINT)gltf_scene->gpu_instance_array.size();
+						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_buffer.GetResource(), 0, nullptr, 0);
+					}
 				},
 			});
 

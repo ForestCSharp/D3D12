@@ -7,6 +7,7 @@
 #include <optional>
 #include <wrl.h>
 #include <cstdint>
+#include <mutex>
 
 #include "Common.h"
 #include "../Shaders/HLSL_Types.h"
@@ -281,6 +282,7 @@ public:
 
 	void UnregisterResource(GpuBuffer& buffer)
 	{
+		std::lock_guard scope_lock(m_mutex);
 		assert(buffer.m_bindless_resource_index.has_value());
 		m_free_list.push_back(*buffer.m_bindless_resource_index);
 		buffer.m_bindless_resource_index.reset();
@@ -288,6 +290,7 @@ public:
 
 	void UnregisterResource(GpuTexture& texture)
 	{
+		std::lock_guard scope_lock(m_mutex);
 		assert(texture.m_bindless_resource_index.has_value());
 		m_free_list.push_back(*texture.m_bindless_resource_index);
 		texture.m_bindless_resource_index.reset();
@@ -299,6 +302,7 @@ public:
 protected:
 	UINT AllocateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* cpu_descriptor)
 	{
+		std::lock_guard scope_lock(m_mutex);
 		UINT descriptor_index_to_use = UINT_MAX;
 		if (m_free_list.size() > 0)
 		{
@@ -323,4 +327,5 @@ protected:
 	UINT m_descriptor_size = 0;
 	UINT m_num_descriptors_allocated = 0;
 	vector<UINT32> m_free_list;
+	std::mutex m_mutex;
 };

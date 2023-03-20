@@ -5,9 +5,10 @@ ConstantBuffer<GlobalConstantBuffer> global_constant_buffer : register(b0, space
 
 struct DrawConstants
 {
-    uint instance_index;
+	uint instance_buffer_index;
+    uint instance_id;
 };
-ConstantBuffer<DrawConstants> my_draw_constants : register(b1, space0);
+ConstantBuffer<DrawConstants> draw_constants : register(b1, space0);
 
 struct PsInput
 {
@@ -19,8 +20,8 @@ struct PsInput
 PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
 {
     //TODO: Common helper fn to fetch vertex from vertex_id and instance_id
-    StructuredBuffer<GpuInstanceData> instances = ResourceDescriptorHeap[global_constant_buffer.instance_buffer_index];
-    GpuInstanceData instance = instances[my_draw_constants.instance_index];
+	StructuredBuffer<GpuInstanceData> instances = ResourceDescriptorHeap[draw_constants.instance_buffer_index];
+	GpuInstanceData instance = instances[draw_constants.instance_id];
     StructuredBuffer<uint> indices = ResourceDescriptorHeap[instance.index_buffer_index];
     StructuredBuffer<Vertex> vertices = ResourceDescriptorHeap[instance.vertex_buffer_index];
     Vertex vertex = vertices[indices[vertex_id]];
