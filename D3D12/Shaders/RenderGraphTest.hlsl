@@ -15,6 +15,7 @@ struct PsInput
     float4 position : SV_POSITION;
     float3 normal : NORMAL;
     float3 color : COLOR;
+	float2 texcoord : TEXCOORD;
 };
 
 PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
@@ -34,10 +35,11 @@ PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : S
     ps_input.position = out_position;
     ps_input.normal = vertex.normal;
     ps_input.color = vertex.color;
+	ps_input.texcoord = vertex.texcoord;
     return ps_input;
 }
 
 float4 FirstNodePixelShader(const PsInput input) : SV_TARGET
 {
-    return float4(input.color, 1);
+    return float4(input.normal, 1);
 }

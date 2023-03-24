@@ -34,6 +34,7 @@ struct Vertex
 	float3 position;
 	float3 normal;
 	float3 color;
+	float2 texcoord;
 
 #ifdef __cplusplus
 	Vertex() = default;

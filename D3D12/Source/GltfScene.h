@@ -7,6 +7,9 @@
 #include <optional>
 #include <vector>
 
+using std::optional;
+using std::nullopt;
+
 #include "GpuResources.h"
 #include "SimpleMath/SimpleMath.h"
 using namespace DirectX::SimpleMath;
@@ -43,7 +46,52 @@ struct GltfRenderData
 	size_t indices_count = indices_count;
 };
 
-//TODO: Rename
+cgltf_attribute* FindAttribute(cgltf_primitive& in_primitive, cgltf_attribute_type in_type)
+{
+	for (int32_t attr_idx = 0; attr_idx < in_primitive.attributes_count; ++attr_idx)
+	{
+		cgltf_attribute* attribute = &in_primitive.attributes[attr_idx];
+		if (attribute->type == in_type)
+		{
+			return attribute;
+		}
+	}
+	return nullptr;
+};
+
+struct AttributeBufferData
+{
+	uint8_t* buffer;
+	cgltf_size count;
+	cgltf_size stride;
+};
+
+optional<AttributeBufferData> GetAttributeBuffer(cgltf_primitive& in_primitive, cgltf_attribute_type in_type)
+{
+	if (cgltf_attribute* attribute = FindAttribute(in_primitive, in_type))
+	{
+		cgltf_accessor* accessor = attribute->data;
+		assert(!accessor->is_sparse);
+		uint8_t* buffer = (uint8_t*) accessor->buffer_view->buffer->data;
+		buffer += accessor->offset + accessor->buffer_view->offset;
+		cgltf_size stride = accessor->stride;
+
+		AttributeBufferData out_data = {
+			.buffer = buffer,
+			.count = accessor->count,
+			.stride = stride,
+		};
+
+		return out_data;
+	}
+	return nullopt;
+};
+
+float rand_norm()
+{
+	return rand_range(0.0f, 1.0f);
+};
+
 // Takes in a staging buffer and buffer desc
 GpuBuffer staging_upload_helper(GltfLoadContext& in_load_ctx, const GpuBufferDesc& in_buffer_desc, void* in_data, size_t in_data_size)
 {
@@ -112,72 +160,57 @@ void recurse_node(GltfLoadContext& load_ctx, cgltf_node* in_node, const Matrix& 
 				load_ctx.bindless_resource_manager->RegisterSRV(*index_buffer, (uint32_t) indices_count, (uint32_t) indices_byte_stride);
 			}
 
-			auto FindAttribute = [](cgltf_primitive& in_primitive, cgltf_attribute_type in_type) -> cgltf_attribute*
-			{
-				for (int32_t attr_idx = 0; attr_idx < in_primitive.attributes_count; ++attr_idx)
-				{
-					cgltf_attribute* attribute = &in_primitive.attributes[attr_idx];
-					if (attribute->type == in_type)
-					{
-						return attribute;
-					}
-				}
-				return nullptr;
-			};
-
 			GpuBuffer vertex_buffer;
 			std::vector<Vertex> vertices;
-			if (cgltf_attribute* positions_attribute = FindAttribute(primitive, cgltf_attribute_type_position))
+
+			const float3 instance_color = float3(rand_norm(), rand_norm(), rand_norm());
+			if (optional<AttributeBufferData> positions_data = GetAttributeBuffer(primitive, cgltf_attribute_type_position))
 			{
-				if (cgltf_accessor* positions_accessor = positions_attribute->data)
+				optional<AttributeBufferData> normals_data = GetAttributeBuffer(primitive, cgltf_attribute_type_normal);
+				optional<AttributeBufferData> color_data = GetAttributeBuffer(primitive, cgltf_attribute_type_color);
+				optional<AttributeBufferData> texcoord_data = GetAttributeBuffer(primitive, cgltf_attribute_type_texcoord);
+
+				cgltf_size vertices_count = positions_data->count;
+				vertices.reserve(vertices_count);
+				for (int32_t i = 0; i < vertices_count; ++i)
 				{
-					assert(!positions_accessor->is_sparse);
+					Vertex new_vertex;
 
-					vertices.reserve(positions_accessor->count);
+					memcpy(&new_vertex.position, positions_data->buffer, positions_data->stride);
+					positions_data->buffer += positions_data->stride;
 
-					uint8_t* positions_buffer = (uint8_t*) positions_accessor->buffer_view->buffer->data;
-					positions_buffer += positions_accessor->offset + positions_accessor->buffer_view->offset;
-					cgltf_size positions_buffer_stride = positions_accessor->stride;
-
-					//TODO: Normals
-					//cgltf_attribute* normals_attribute = FindAttribute(primitive, cgltf_attribute_type_normal);
-
-					//TODO: UVs
-					//cgltf_attribute* uvs_attribute = FindAttribute(primitive, cgltf_attribute_type_texcoord);
-
-					auto rand_norm = []() -> float
+					if (normals_data)
 					{
-						return rand_range(0.0f, 1.0f);
-					};
-					float3 instance_color = float3(rand_norm(), rand_norm(), rand_norm());
-
-					cgltf_size vertices_count = positions_accessor->count;
-					vertices.reserve(vertices_count); //TODO: Add unititialized... (just calloc?)
-					for (int32_t i = 0; i < vertices_count; ++i)
-					{
-						Vertex new_vertex;
-
-						memcpy(&new_vertex.position, positions_buffer, positions_buffer_stride);
-
-						new_vertex.color = instance_color;
-
-						vertices.emplace_back(new_vertex);
-
-						positions_buffer += positions_buffer_stride;
+						memcpy(&new_vertex.normal, normals_data->buffer, normals_data->stride);
+						normals_data->buffer += normals_data->stride;
 					}
 
-					cgltf_size vertex_buffer_size = vertices.size() * sizeof(Vertex);
+					if (color_data)
+					{
+						memcpy(&new_vertex.color, color_data->buffer, color_data->stride);
+						color_data->buffer += color_data->stride;
+					}
 
-					GpuBufferDesc vertex_buffer_desc = {
-						.allocator = load_ctx.allocator,
-						.size = vertex_buffer_size,
-						.heap_type = D3D12_HEAP_TYPE_DEFAULT,
-						.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-						.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
-					};
-					vertex_buffer = staging_upload_helper(load_ctx, vertex_buffer_desc, vertices.data(), vertex_buffer_size);
-					load_ctx.bindless_resource_manager->RegisterSRV(vertex_buffer, (uint32_t) vertices_count, sizeof(Vertex));
+					if (texcoord_data)
+					{
+						memcpy(&new_vertex.texcoord, texcoord_data->buffer, texcoord_data->stride);
+						texcoord_data->buffer += texcoord_data->stride;
+					}
+
+					vertices.emplace_back(new_vertex);
 				}
+
+				cgltf_size vertex_buffer_size = vertices.size() * sizeof(Vertex);
+
+				GpuBufferDesc vertex_buffer_desc = {
+					.allocator = load_ctx.allocator,
+					.size = vertex_buffer_size,
+					.heap_type = D3D12_HEAP_TYPE_DEFAULT,
+					.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+					.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+				};
+				vertex_buffer = staging_upload_helper(load_ctx, vertex_buffer_desc, vertices.data(), vertex_buffer_size);
+				load_ctx.bindless_resource_manager->RegisterSRV(vertex_buffer, (uint32_t) vertices_count, sizeof(Vertex));
 			}
 
 			result.emplace_back(GltfRenderData {

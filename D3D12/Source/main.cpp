@@ -496,6 +496,7 @@ int main()
 		return GltfScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
 	});
 	
+	//TODO: Wrap this in helper struct
 	optional<GltfScene> gltf_scene;
 	auto get_scene_if_ready = [&]() -> optional<GltfScene>
 	{
