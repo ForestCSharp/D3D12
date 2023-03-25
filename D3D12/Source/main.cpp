@@ -486,7 +486,7 @@ int main()
 	global_constant_buffer_data.frames_rendered = 0;
 
 	// Load GLTF Scene
-	auto load_gltf_scene_future = thread_pool.PostTask([&]() {
+	TaskResult<GltfScene> gltf_task_result = thread_pool.PostTask([&]() {
 
 		const char* gltf_files[3] = {
 			"Assets/FlyingWorld/scene.gltf",
@@ -512,20 +512,6 @@ int main()
 		};
 		return GltfScene(gltf_init_data);
 	});
-	
-	//TODO: Wrap this in helper struct
-	optional<GltfScene> gltf_scene;
-	auto get_scene_if_ready = [&]() -> optional<GltfScene>
-	{
-		if (!load_gltf_scene_future.valid() || load_gltf_scene_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-		{
-			return load_gltf_scene_future.get();
-		}
-
-		return std::nullopt;
-	};
-
-	//TODO: Helper class to wrap and query result of future with optional
 
 	while (!should_close)
 	{
@@ -741,15 +727,8 @@ int main()
 					};
 					command_list->RSSetScissorRects(1, &scissor);
 
-					
-					if (!gltf_scene.has_value())
+					if (optional<GltfScene> gltf_scene = gltf_task_result.get())
 					{
-						gltf_scene = get_scene_if_ready();
-					}
-
-					if (gltf_scene.has_value())
-					{
-						/*GltfScene flying_world_scene = load_gltf_scene_future.get();*/
 						UINT instance_count = (UINT)gltf_scene->gpu_instance_array.size();
 						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_buffer.GetResource(), 0, nullptr, 0);
 					}

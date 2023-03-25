@@ -31,7 +31,37 @@
 #include <type_traits>
 #include <vector>
 
+#include <optional>
+using std::optional;
+using std::nullopt;
+
 #include "Common.h"
+
+template<typename T> 
+struct TaskResult
+{
+	optional<T> get()
+	{
+		// If we haven't set our result...
+		if (!result.has_value())
+		{
+			// See if future is ready
+			if (!future.valid() || future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+			{
+				// Future has a result, set our optional
+				result = future.get();
+			}
+		}
+
+		// Return optional
+		return result;
+	}
+
+private:
+	std::future<T> future;
+	optional<T> result;
+	friend class ThreadPool;
+};
 
 enum class TaskShutdownBehavior {
     BlockShutdown,
@@ -69,7 +99,7 @@ public:
     DISALLOW_COPY(ThreadPool);
 
 	template<typename F, typename... Args>
-	std::future<std::invoke_result_t<F,Args...>> PostTask(F&& fn, Args&&... args)
+	TaskResult<std::invoke_result_t<F,Args...>> PostTask(F&& fn, Args&&... args)
 	{
 		return PostTaskWithShutdownBehavior(TaskShutdownBehavior::SkipOnShutdown,
 		                                    std::forward<F>(fn),
@@ -77,7 +107,7 @@ public:
 	}
 
     template<typename F, typename... Args>
-	std::future<std::invoke_result_t<F,Args...>> PostBlockingTask(F&& fn, Args&&... args)
+	TaskResult<std::invoke_result_t<F,Args...>> PostBlockingTask(F&& fn, Args&&... args)
     {
         return PostTaskWithShutdownBehavior(TaskShutdownBehavior::BlockShutdown,
                                             std::forward<F>(fn),
@@ -85,7 +115,7 @@ public:
     }
 
     template<typename F, typename... Args>
-	std::future<std::invoke_result_t<F,Args...>> PostTaskWithShutdownBehavior(
+	TaskResult<std::invoke_result_t<F,Args...>> PostTaskWithShutdownBehavior(
         TaskShutdownBehavior behavior, F&& fn, Args&&... args)
     {
 		using R = std::invoke_result_t<F,Args...>;
@@ -95,7 +125,8 @@ public:
         auto task_fn = std::make_shared<std::packaged_task<R()>>(
             std::bind(std::forward<F>(fn), std::forward<Args>(args)...));
 
-        auto future = task_fn->get_future();
+		TaskResult<R> result;
+        result.future = task_fn->get_future();
 
         Task task([task_fn=std::move(task_fn)] { (*task_fn)(); }, behavior);
 
@@ -107,7 +138,8 @@ public:
 
         not_empty_.notify_one();
 
-        return future;
+        //return TaskResult<R>(future);
+		return result;
     }
 
 private:
