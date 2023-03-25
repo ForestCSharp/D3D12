@@ -23,7 +23,7 @@
 using namespace DirectX::SimpleMath;
 
 #include <vector>
-#include <unordered_map>
+#include <unordered_map> 
 #include <string>
 
 #include "Common.h"
@@ -492,8 +492,12 @@ int main()
 			.allocator = gpu_memory_allocator,
 			.command_queue = copy_queue,
 			.bindless_resource_manager = &bindless_resource_manager,
+			//.global_transform = Matrix::Identity(),
+			.global_transform = Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
-		return GltfScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
+		//return GltfScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
+		return GltfScene(gltf_init_data, "Assets/SunTemple/suntemple.gltf");
+		//return GltfScene(gltf_init_data, "Assets/Sponza/Sponza.gltf");
 	});
 	
 	//TODO: Wrap this in helper struct

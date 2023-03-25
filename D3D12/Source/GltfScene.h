@@ -21,6 +21,7 @@ struct GltfInitData
 	D3D12MA::Allocator* allocator = nullptr;
 	ComPtr<ID3D12CommandQueue> command_queue = nullptr;
 	BindlessResourceManager* bindless_resource_manager = nullptr;
+	Matrix global_transform = Matrix::Identity();
 };
 
 struct GltfLoadContext
@@ -43,7 +44,7 @@ struct GltfRenderData
 	Matrix transform;
 	GpuBuffer vertex_buffer;
 	optional<GpuBuffer> index_buffer;
-	size_t indices_count = indices_count;
+	size_t indices_count;
 };
 
 cgltf_attribute* FindAttribute(cgltf_primitive& in_primitive, cgltf_attribute_type in_type)
@@ -59,30 +60,38 @@ cgltf_attribute* FindAttribute(cgltf_primitive& in_primitive, cgltf_attribute_ty
 	return nullptr;
 };
 
-struct AttributeBufferData
+struct GltfBufferData
 {
 	uint8_t* buffer;
 	cgltf_size count;
 	cgltf_size stride;
 };
 
-optional<AttributeBufferData> GetAttributeBuffer(cgltf_primitive& in_primitive, cgltf_attribute_type in_type)
+optional<GltfBufferData> GetAccessorBuffer(cgltf_accessor* accessor)
 {
-	if (cgltf_attribute* attribute = FindAttribute(in_primitive, in_type))
+	if (accessor && !accessor->is_sparse)
 	{
-		cgltf_accessor* accessor = attribute->data;
-		assert(!accessor->is_sparse);
 		uint8_t* buffer = (uint8_t*) accessor->buffer_view->buffer->data;
 		buffer += accessor->offset + accessor->buffer_view->offset;
 		cgltf_size stride = accessor->stride;
 
-		AttributeBufferData out_data = {
+		GltfBufferData out_data = {
 			.buffer = buffer,
 			.count = accessor->count,
 			.stride = stride,
 		};
 
 		return out_data;
+	}
+
+	return nullopt;
+}
+
+optional<GltfBufferData> GetAttributeBuffer(cgltf_primitive& in_primitive, cgltf_attribute_type in_type)
+{
+	if (cgltf_attribute* attribute = FindAttribute(in_primitive, in_type))
+	{
+		return GetAccessorBuffer(attribute->data);
 	}
 	return nullopt;
 };
@@ -129,21 +138,25 @@ void recurse_node(GltfLoadContext& load_ctx, cgltf_node* in_node, const Matrix& 
 
 			optional<GpuBuffer> index_buffer;
 			cgltf_size indices_count = 0;
-			if (cgltf_accessor* indices_accessor = primitive.indices)
+			if (optional<GltfBufferData> indices_data = GetAccessorBuffer(primitive.indices))
 			{
-				uint8_t* indices_buffer = (uint8_t*) indices_accessor->buffer_view->buffer->data;
-				indices_buffer += indices_accessor->offset + indices_accessor->buffer_view->offset;
-				cgltf_size indices_byte_stride = indices_accessor->stride;
+				uint32_t* index_data = (uint32_t*) calloc(indices_data->count, sizeof(uint32_t));
 
-				indices_count = indices_accessor->count;
-				assert(indices_byte_stride == 4); //TODO: Support 16-bit indices
-				uint32_t* index_data = (uint32_t*) calloc(indices_count, indices_byte_stride);
-				for (int i = 0; i < indices_count; ++i) {
-					memcpy(&index_data[i], indices_buffer, indices_byte_stride);
-					indices_buffer += indices_byte_stride;
+				for (int i = 0; i < indices_data->count; ++i)
+				{
+					if (indices_data->stride == 2)
+					{
+						memcpy(&index_data[i], indices_data->buffer, indices_data->stride);
+					}
+					else if (indices_data->stride == 4)
+					{
+						memcpy(&index_data[i], indices_data->buffer, indices_data->stride);
+					}
+
+					indices_data->buffer += indices_data->stride;
 				}
 
-				cgltf_size index_buffer_size = indices_count * indices_byte_stride;
+				cgltf_size index_buffer_size = indices_data->count * sizeof(uint32_t);
 
 				GpuBufferDesc index_buffer_desc = {
 					.allocator = load_ctx.allocator,
@@ -153,22 +166,25 @@ void recurse_node(GltfLoadContext& load_ctx, cgltf_node* in_node, const Matrix& 
 					.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
 				};
 				index_buffer = staging_upload_helper(load_ctx, index_buffer_desc, index_data, index_buffer_size);
+				indices_count = indices_data->count;
 
 				free(index_data);
 
 				// Finally, register index buffer with bindless resource manager
-				load_ctx.bindless_resource_manager->RegisterSRV(*index_buffer, (uint32_t) indices_count, (uint32_t) indices_byte_stride);
+				load_ctx.bindless_resource_manager->RegisterSRV(*index_buffer, (uint32_t) indices_data->count, sizeof(uint32_t));
 			}
+			assert(index_buffer.has_value());
+			assert(indices_count > 0);
 
 			GpuBuffer vertex_buffer;
 			std::vector<Vertex> vertices;
 
 			const float3 instance_color = float3(rand_norm(), rand_norm(), rand_norm());
-			if (optional<AttributeBufferData> positions_data = GetAttributeBuffer(primitive, cgltf_attribute_type_position))
+			if (optional<GltfBufferData> positions_data = GetAttributeBuffer(primitive, cgltf_attribute_type_position))
 			{
-				optional<AttributeBufferData> normals_data = GetAttributeBuffer(primitive, cgltf_attribute_type_normal);
-				optional<AttributeBufferData> color_data = GetAttributeBuffer(primitive, cgltf_attribute_type_color);
-				optional<AttributeBufferData> texcoord_data = GetAttributeBuffer(primitive, cgltf_attribute_type_texcoord);
+				optional<GltfBufferData> normals_data = GetAttributeBuffer(primitive, cgltf_attribute_type_normal);
+				optional<GltfBufferData> color_data = GetAttributeBuffer(primitive, cgltf_attribute_type_color);
+				optional<GltfBufferData> texcoord_data = GetAttributeBuffer(primitive, cgltf_attribute_type_texcoord);
 
 				cgltf_size vertices_count = positions_data->count;
 				vertices.reserve(vertices_count);
@@ -269,7 +285,7 @@ struct GltfScene
 
 			for (int32_t root_node_idx = 0; root_node_idx < scene->nodes_count; ++root_node_idx)
 			{
-				recurse_node(load_ctx, scene->nodes[root_node_idx], Matrix::Identity(), render_data_array);
+				recurse_node(load_ctx, scene->nodes[root_node_idx], init_data.global_transform, render_data_array);
 			}
 
 			const uint num_instances = (uint) render_data_array.size();

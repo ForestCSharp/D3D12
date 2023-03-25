@@ -23,6 +23,7 @@ PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : S
     //TODO: Common helper fn to fetch vertex from vertex_id and instance_id
 	StructuredBuffer<GpuInstanceData> instances = ResourceDescriptorHeap[draw_constants.instance_buffer_index];
 	GpuInstanceData instance = instances[draw_constants.instance_id];
+
     StructuredBuffer<uint> indices = ResourceDescriptorHeap[instance.index_buffer_index];
     StructuredBuffer<Vertex> vertices = ResourceDescriptorHeap[instance.vertex_buffer_index];
     Vertex vertex = vertices[indices[vertex_id]];
