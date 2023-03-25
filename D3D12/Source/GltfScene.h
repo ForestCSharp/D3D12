@@ -17,11 +17,12 @@ using namespace DirectX::SimpleMath;
 
 struct GltfInitData
 {
+	const char* file = nullptr;
+	Matrix transform = Matrix::Identity();
 	ComPtr<ID3D12Device5> device = nullptr;
 	D3D12MA::Allocator* allocator = nullptr;
 	ComPtr<ID3D12CommandQueue> command_queue = nullptr;
 	BindlessResourceManager* bindless_resource_manager = nullptr;
-	Matrix global_transform = Matrix::Identity();
 };
 
 struct GltfLoadContext
@@ -246,12 +247,12 @@ void recurse_node(GltfLoadContext& load_ctx, cgltf_node* in_node, const Matrix& 
 
 struct GltfScene
 {
-	GltfScene(const GltfInitData& init_data, const char* in_path)
+	GltfScene(const GltfInitData& init_data)
 	{
 		cgltf_options options = {};
 		cgltf_data* data = NULL;
-		assert(cgltf_parse_file(&options, in_path, &data) == cgltf_result_success);
-		assert(cgltf_load_buffers(&options, data, in_path) == cgltf_result_success);
+		assert(cgltf_parse_file(&options, init_data.file, &data) == cgltf_result_success);
+		assert(cgltf_load_buffers(&options, data, init_data.file) == cgltf_result_success);
 		// Process default scene
 		if (const cgltf_scene* scene = data->scene)
 		{
@@ -285,7 +286,7 @@ struct GltfScene
 
 			for (int32_t root_node_idx = 0; root_node_idx < scene->nodes_count; ++root_node_idx)
 			{
-				recurse_node(load_ctx, scene->nodes[root_node_idx], init_data.global_transform, render_data_array);
+				recurse_node(load_ctx, scene->nodes[root_node_idx], init_data.transform, render_data_array);
 			}
 
 			const uint num_instances = (uint) render_data_array.size();

@@ -487,17 +487,30 @@ int main()
 
 	// Load GLTF Scene
 	auto load_gltf_scene_future = thread_pool.PostTask([&]() {
+
+		const char* gltf_files[3] = {
+			"Assets/FlyingWorld/scene.gltf",
+			"Assets/Sponza/Sponza.gltf",
+			"Assets/SunTemple/suntemple.gltf",
+		};
+
+		const Matrix transforms[3] = {
+			Matrix::Identity(),
+			Matrix::Identity(),
+			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
+		};
+
+		const size_t gltf_scene_index = 2;
+
 		GltfInitData gltf_init_data = {
+			.file = gltf_files[gltf_scene_index],
+			.transform = transforms[gltf_scene_index],
 			.device = device,
 			.allocator = gpu_memory_allocator,
 			.command_queue = copy_queue,
 			.bindless_resource_manager = &bindless_resource_manager,
-			//.global_transform = Matrix::Identity(),
-			.global_transform = Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
-		//return GltfScene(gltf_init_data, "Assets/FlyingWorld/scene.gltf");
-		return GltfScene(gltf_init_data, "Assets/SunTemple/suntemple.gltf");
-		//return GltfScene(gltf_init_data, "Assets/Sponza/Sponza.gltf");
+		return GltfScene(gltf_init_data);
 	});
 	
 	//TODO: Wrap this in helper struct
