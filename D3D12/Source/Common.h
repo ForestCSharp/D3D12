@@ -72,6 +72,11 @@ inline float rand_range(float min, float max)
 	return map(randf(), 0.0f, 1.0f, min, max);
 }
 
+inline float rand_norm()
+{
+	return rand_range(0.0f, 1.0f);
+};
+
 namespace Constants
 {
 	static constexpr double PI = 3.1415926535897932384626433832795028841971693993751058209;

@@ -97,11 +97,6 @@ optional<GltfBufferData> GetAttributeBuffer(cgltf_primitive& in_primitive, cgltf
 	return nullopt;
 };
 
-float rand_norm()
-{
-	return rand_range(0.0f, 1.0f);
-};
-
 // Takes in a staging buffer and buffer desc
 GpuBuffer staging_upload_helper(GltfLoadContext& in_load_ctx, const GpuBufferDesc& in_buffer_desc, void* in_data, size_t in_data_size)
 {
@@ -293,18 +288,18 @@ struct GltfScene
 
 			//Create this first and register as bindless resource so we can reference it in indirect draw args
 			const size_t instances_buffer_size = num_instances * sizeof(GpuInstanceData);
-			instances_buffer = GpuBuffer(GpuBufferDesc{
+			instances_gpu_buffer = GpuBuffer(GpuBufferDesc{
 				.allocator = load_ctx.allocator,
 				.size = instances_buffer_size,
 				.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
 			});
-			load_ctx.bindless_resource_manager->RegisterSRV(instances_buffer, num_instances, sizeof(GpuInstanceData));
+			load_ctx.bindless_resource_manager->RegisterSRV(instances_gpu_buffer, num_instances, sizeof(GpuInstanceData));
 
 			// Create our gpu_instance_data and indirect_draw_data from our GltfRenderData
-			gpu_instance_array.reserve(num_instances);
-			indirect_draw_data_array.reserve(num_instances);
+			instances_array.reserve(num_instances);
+			indirect_draw_array.reserve(num_instances);
 			for (uint render_data_index = 0; render_data_index < num_instances; ++render_data_index)
 			{
 				const GltfRenderData& render_data = render_data_array[render_data_index];
@@ -317,10 +312,10 @@ struct GltfScene
 					.index_buffer_index = render_data.index_buffer->GetBindlessResourceIndex(),
 				};
 				
-				gpu_instance_array.emplace_back(gpu_instance_data);
+				instances_array.emplace_back(gpu_instance_data);
 
 				IndirectDrawData indirect_draw_data = {
-					.instance_buffer_index = instances_buffer.GetBindlessResourceIndex(),
+					.instance_buffer_index = instances_gpu_buffer.GetBindlessResourceIndex(),
 					.instance_id = render_data_index,
 					.draw_arguments = {
 						.VertexCountPerInstance = (uint32_t) render_data.index_buffer->GetSize() / sizeof(uint32_t),
@@ -329,7 +324,7 @@ struct GltfScene
 						.StartInstanceLocation = 0,
 					},
 				};
-				indirect_draw_data_array.emplace_back(indirect_draw_data);
+				indirect_draw_array.emplace_back(indirect_draw_data);
 			}
 
 			//Create and upload indirect draw buffer
@@ -341,30 +336,30 @@ struct GltfScene
 				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 				.resource_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 			};
-			indirect_draw_buffer = staging_upload_helper(load_ctx, indirect_draw_buffer_desc, indirect_draw_data_array.data(), indirect_draw_buffer_size);
+			indirect_draw_gpu_buffer = staging_upload_helper(load_ctx, indirect_draw_buffer_desc, indirect_draw_array.data(), indirect_draw_buffer_size);
 
 			// Write out GPU Data for instances
 			//TODO: instances_buffer can now be D3D12_HEAP_TYPE_DEFAULT
-			instances_buffer.Write(gpu_instance_array.data(), instances_buffer_size);
+			instances_gpu_buffer.Write(instances_array.data(), instances_buffer_size);
 		}
 
 		cgltf_free(data);
 	}
 
-	/* Holds the actual render resources */
+	/* Manages/Holds the actual render resources for each primitive */
 	std::vector<GltfRenderData> render_data_array;
 
-	/* Sent to the GPU to allow bindless access to resources in render_data_array */
-	std::vector<GpuInstanceData> gpu_instance_array;
+	/* Sent to the GPU to allow bindless access to vtx/idx buffer in render_data_array */
+	std::vector<GpuInstanceData> instances_array;
 
 	/* Buffer that holds our gpu scene instance data */
-	GpuBuffer instances_buffer;
+	GpuBuffer instances_gpu_buffer;
 
-	/* Indirect Draw Args */ //TODO: Don't need to keep this around after creating indirect_draw_buffer
-	std::vector<IndirectDrawData> indirect_draw_data_array;
+	/* Indirect Draw Args */
+	std::vector<IndirectDrawData> indirect_draw_array;
 
 	/* Buffer for indirect_draw_data */
-	GpuBuffer indirect_draw_buffer;
+	GpuBuffer indirect_draw_gpu_buffer;
 };
 
 // TODO: properly handle instances (i.e. multiple nodes pointing to the same mesh)

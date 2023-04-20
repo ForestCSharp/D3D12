@@ -16,6 +16,7 @@ struct PsInput
     float3 normal : NORMAL;
     float3 color : COLOR;
 	float2 texcoord : TEXCOORD;
+	float3 world_position : TEXCOORD1;
 };
 
 PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
@@ -29,18 +30,22 @@ PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : S
     Vertex vertex = vertices[indices[vertex_id]];
 
     const float4x4 proj_view = mul(global_constant_buffer.projection, global_constant_buffer.view);
-    float4 world_position = mul(instance.transform, float4(vertex.position, 1));
-    float4 out_position = mul(proj_view, world_position);
+    const float4 world_position = mul(instance.transform, float4(vertex.position, 1));
+	const float4 world_normal = mul(instance.transform, float4(vertex.normal, 0));
+    const float4 out_position = mul(proj_view, world_position);
 
     PsInput ps_input;
     ps_input.position = out_position;
-    ps_input.normal = vertex.normal;
-    ps_input.color = vertex.color;
+    ps_input.normal = world_normal.xyz;
+	ps_input.color = vertex.color;
 	ps_input.texcoord = vertex.texcoord;
+	ps_input.world_position = world_position.xyz;
     return ps_input;
 }
 
 float4 FirstNodePixelShader(const PsInput input) : SV_TARGET
 {
-    return float4(input.normal, 1);
+	const OctreeNode octree_node = Octree_Search(global_constant_buffer.octree_index, input.world_position);
+	const float3 octree_color = octree_node.color;
+	return float4(octree_color, 1);
 }

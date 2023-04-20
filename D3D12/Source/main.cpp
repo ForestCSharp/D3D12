@@ -57,6 +57,63 @@ const wchar_t* raygen_shader_name = L"Raygen";
 const wchar_t* closest_hit_shader_name = L"ClosestHit";
 const wchar_t* miss_shader_name = L"Miss";
 
+//BEGIN SG/Octree
+size_t ipow(const size_t base, const size_t exp)
+{
+	size_t result = 1;
+	for (int i = 0; i < exp; ++i)
+	{
+		result *= base;
+	}
+	return result;
+}
+
+size_t octree_space_requirements(const size_t octree_depth)
+{
+	// (P^(n+1) - 1) / (P - 1) 
+	// where P == 8 and n == octree_depth
+	return (ipow(8, octree_depth + 1) - 1) / (8 - 1);
+}
+
+int octree_node_init(std::vector<OctreeNode>& octree, const float3& node_center, const float extents, const size_t current_depth)
+{
+	assert(current_depth >= 0);
+
+	size_t index = octree.size();
+	octree.push_back(OctreeNode());
+
+	// Never store out a reference to octree[index] as the loops below could cause reallocations if we didn't reserve enough space
+	octree[index].is_leaf = current_depth == 0;
+	octree[index].min = node_center - float3(extents / 2.0f);
+	octree[index].max = node_center + float3(extents / 2.0f);
+	
+	//FCS TODO: Temp payload. replace with SGBasis
+	octree[index].color = float3(rand_norm(), rand_norm(), rand_norm());
+
+	if (!octree[index].is_leaf)
+	{
+		for (int x = 0; x < 2; ++x)
+		{
+			for (int y = 0; y < 2; ++y)
+			{
+				for (int z = 0; z < 2; ++z)
+				{
+					const float child_extents = extents / 2.0f;
+					const float child_half_extents = child_extents / 2.0f;
+					const float child_x = x == 0 ? node_center.x - child_half_extents : node_center.x + child_half_extents;
+					const float child_y = y == 0 ? node_center.y - child_half_extents : node_center.y + child_half_extents;
+					const float child_z = z == 0 ? node_center.z - child_half_extents : node_center.z + child_half_extents;
+					const float3 child_center(child_x, child_y, child_z);
+					octree[index].children[x][y][z] = octree_node_init(octree, child_center, child_extents, current_depth - 1);
+				}
+			}
+		}
+	}
+
+	return static_cast<int>(index);
+};
+//END SG/Octree
+
 struct FrameDataDesc
 {
 	UINT width;
@@ -373,10 +430,56 @@ int main()
 
 	BindlessResourceManager bindless_resource_manager(device);
 
+	//FCS TODO: BEGIN TESTING SGs
+
+	//FCS TODO: Calculate center/bounds of scene and use that to inform extents and center
+	constexpr float3 octree_center(0, 0, 0);
+	constexpr size_t octree_depth = 6;
+	constexpr float octree_extents = 25000;
+	std::vector<OctreeNode> octree;
+	octree.reserve(octree_space_requirements(octree_depth));
+	octree_node_init(octree, octree_center, octree_extents, octree_depth);
+
+	//FCS TODO: Move to top of file and print actual structure (using children)
+//	auto octree_print = [] (std::vector<OctreeNode>& octree)
+//	{
+//		for (size_t node_index = 0; node_index < octree.size(); ++node_index)
+//		{
+//			const OctreeNode& octree_node = octree[node_index];
+//			printf("%llu : min: (%.1f,%.1f,%.1f), max: (%.1f,%.1f,%.1f), is_leaf: %s\n", 
+//			       node_index, 
+//			       octree_node.min.x, octree_node.min.y, octree_node.min.z,
+//			       octree_node.max.x, octree_node.max.y, octree_node.max.z,
+//			       octree_node.is_leaf ? "yes" : "no"
+//			       );
+//		}
+//	};
+//	octree_print(octree);
+
+	const size_t octree_buffer_size = octree.size() * sizeof(OctreeNode);
+	GpuBuffer octree_buffer(GpuBufferDesc{
+		.allocator = gpu_memory_allocator,
+		.size = octree_buffer_size,
+		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
+		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
+	});
+	octree_buffer.Write(octree.data(), octree_buffer_size);
+	//FCS TODO: move to GPU-only memory
+	const uint32_t octree_srv_index =  bindless_resource_manager.RegisterSRV(octree_buffer, (uint32_t) octree.size(), sizeof(OctreeNode));
+
+	//1. Setup probe grid (with random SGBasis values)
+	//2. Debug draw spheres for each probe to confirm spacing
+	//3. use for probe lighting
+	//4. Actually capture lighting data using raytracing
+
+	//FCS TODO: END TESTING SGs
+
 	// Constant Buffers
 	GlobalConstantBuffer global_constant_buffer_data =
 	{
 		.sun_dir = Vector4(0.5, 0.25, 1, 0),
+		.octree_index = octree_srv_index,
 	};
 	const size_t global_constant_buffer_size = ROUND_UP(sizeof(GlobalConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
@@ -389,7 +492,7 @@ int main()
 			.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 			.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 			.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
-			});
+		});
 		global_constant_buffer.Write(&global_constant_buffer_data, sizeof(GlobalConstantBuffer));
 		global_constant_buffers[current_backbuffer_index] = global_constant_buffer;
 	}
@@ -500,7 +603,7 @@ int main()
 			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
 
-		const size_t gltf_scene_index = 2;
+		const size_t gltf_scene_index = 0;
 
 		GltfInitData gltf_init_data = {
 			.file = gltf_files[gltf_scene_index],
@@ -729,8 +832,8 @@ int main()
 
 					if (optional<GltfScene> gltf_scene = gltf_task_result.get())
 					{
-						UINT instance_count = (UINT)gltf_scene->gpu_instance_array.size();
-						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_buffer.GetResource(), 0, nullptr, 0);
+						UINT instance_count = (UINT)gltf_scene->instances_array.size();
+						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_gpu_buffer.GetResource(), 0, nullptr, 0);
 					}
 				},
 			});

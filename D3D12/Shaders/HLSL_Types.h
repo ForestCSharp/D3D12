@@ -9,8 +9,8 @@
 //
 //*********************************************************
 
-#ifndef RAYTRACINGHLSLCOMPAT_H
-#define RAYTRACINGHLSLCOMPAT_H
+#ifndef HLSL_TYPES_H
+#define HLSL_TYPES_H
 
 #ifdef __cplusplus
 #include <d3d12.h>
@@ -28,6 +28,8 @@ struct uint4 { uint x, y, z, w; };
 struct uint3 { uint x, y, z;  };
 struct uint2 { uint x, y; };
 #endif
+
+#include "SG.h"
 
 struct Vertex
 {
@@ -97,6 +99,9 @@ struct GlobalConstantBuffer
     uint tlas_buffer_index;
     uint frames_rendered;
     uint random;
+
+	//SG octree
+	uint octree_index;
 };
 
 struct RayPayload
@@ -106,4 +111,4 @@ struct RayPayload
 
 static uint NUM_BINDLESS_DESCRIPTORS_PER_TYPE = 32768;
 
-#endif // RAYTRACINGHLSLCOMPAT_H
+#endif // #ifndef HLSL_TYPES_H

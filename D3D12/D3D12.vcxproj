@@ -131,6 +131,7 @@
     <None Include="Source\SimpleMath\SimpleMath.inl" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Shaders\SG.h" />
     <ClInclude Include="Source\GltfScene.h" />
     <ClInclude Include="Shaders\HLSL_Types.h" />
     <ClInclude Include="Source\cgltf\cgltf.h" />
@@ -138,11 +139,11 @@
     <ClInclude Include="Source\D3D12MemAlloc\D3D12MemAlloc.h" />
     <ClInclude Include="Source\GpuCommands.h" />
     <ClInclude Include="Source\GpuPipelines.h" />
+    <ClInclude Include="Source\GpuRaytracing.h" />
     <ClInclude Include="Source\GpuResources.h" />
     <ClInclude Include="Source\RenderGraph.h" />
     <ClInclude Include="Source\ShaderCompiler.h" />
     <ClInclude Include="Source\SimpleMath\SimpleMath.h" />
-    <ClInclude Include="Source\StaticBlock.h" />
     <ClInclude Include="Source\ThreadPool.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
