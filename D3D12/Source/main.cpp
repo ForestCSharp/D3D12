@@ -433,28 +433,45 @@ int main()
 	//FCS TODO: BEGIN TESTING SGs
 
 	//FCS TODO: Calculate center/bounds of scene and use that to inform extents and center
-	constexpr float3 octree_center(0, 0, 0);
-	constexpr size_t octree_depth = 6;
-	constexpr float octree_extents = 25000;
+	constexpr float3 octree_center(0, 1000, 0);
+	constexpr size_t octree_depth = 5;
+	constexpr float octree_extents = 4000;
 	std::vector<OctreeNode> octree;
 	octree.reserve(octree_space_requirements(octree_depth));
 	octree_node_init(octree, octree_center, octree_extents, octree_depth);
 
-	//FCS TODO: Move to top of file and print actual structure (using children)
-//	auto octree_print = [] (std::vector<OctreeNode>& octree)
-//	{
-//		for (size_t node_index = 0; node_index < octree.size(); ++node_index)
-//		{
-//			const OctreeNode& octree_node = octree[node_index];
-//			printf("%llu : min: (%.1f,%.1f,%.1f), max: (%.1f,%.1f,%.1f), is_leaf: %s\n", 
-//			       node_index, 
-//			       octree_node.min.x, octree_node.min.y, octree_node.min.z,
-//			       octree_node.max.x, octree_node.max.y, octree_node.max.z,
-//			       octree_node.is_leaf ? "yes" : "no"
-//			       );
-//		}
-//	};
-//	octree_print(octree);
+	UVSphere uv_sphere(UVSphereDesc{
+		.device = device,
+		.command_queue = command_queue,
+		.command_allocator = frame_data.get_command_allocator(),
+		.command_list = command_list,
+		.allocator = gpu_memory_allocator,
+		.radius = 10.0f,
+		.latitudes = 12,
+		.longitudes = 12,
+	});
+
+	GpuInstanceData uv_sphere_instance_data =
+	{
+		.transform = Matrix::Identity(),
+		.vertex_buffer_index = bindless_resource_manager.RegisterSRV(uv_sphere.vertex_buffer, uv_sphere.vertices_count, sizeof(Vertex)),
+		.index_buffer_index = bindless_resource_manager.RegisterSRV(uv_sphere.index_buffer, uv_sphere.indices_count, sizeof(uint32_t)),
+	};
+
+	GpuBuffer uv_sphere_instance_buffer(GpuBufferDesc{
+		.allocator = gpu_memory_allocator,
+		.size = 1 * sizeof(GpuInstanceData),
+		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
+		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
+	});
+	uv_sphere_instance_buffer.Write(&uv_sphere_instance_data, sizeof(uv_sphere_instance_data));
+	bindless_resource_manager.RegisterSRV(uv_sphere_instance_buffer, 1, sizeof(GpuInstanceData));
+
+	//FCS TODO: 
+	// 1. Draw instanced with octree.size()
+	// 2. If leaf node, actually output sphere in pixel shader, otherwise float4(0,0,0,0) 
+
 
 	const size_t octree_buffer_size = octree.size() * sizeof(OctreeNode);
 	GpuBuffer octree_buffer(GpuBufferDesc{
@@ -523,7 +540,6 @@ int main()
 				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
 			};
 
-			//TODO: Replace need for this with an indirect draw?
 			D3D12_ROOT_PARAMETER instance_index_root_param =
 			{
 				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
@@ -603,7 +619,7 @@ int main()
 			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
 
-		const size_t gltf_scene_index = 0;
+		const size_t gltf_scene_index = 1;
 
 		GltfInitData gltf_init_data = {
 			.file = gltf_files[gltf_scene_index],
@@ -755,7 +771,7 @@ int main()
 			};
 
 			// Static to prevent cleanup / recreation. TODO: pool these in some manager.
-			static ComPtr<ID3D12PipelineState> first_node_pipeline_state = GraphicsPipelineBuilder()
+			static ComPtr<ID3D12PipelineState> first_node_pso = GraphicsPipelineBuilder()
 				.with_root_signature(global_root_signature)
 				.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
 				.with_ps(CompilePixelShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodePixelShader"))
@@ -763,7 +779,18 @@ int main()
 				.with_depth_enabled(true)
 				.with_dsv_format(depth_format)
 				.with_rtv_formats({ color_format })
-				.with_debug_name(L"first_node_pipeline_state")
+				.with_debug_name(L"first_node_pso")
+			.build(device);
+
+			static ComPtr<ID3D12PipelineState> octree_debug_view_pso = GraphicsPipelineBuilder()
+				.with_root_signature(global_root_signature)
+				.with_vs(CompileVertexShader(L"Shaders/OctreeDebugView.hlsl", L"VertexShader"))
+				.with_ps(CompilePixelShader(L"Shaders/OctreeDebugView.hlsl", L"PixelShader"))
+				.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
+				.with_depth_enabled(true)
+				.with_dsv_format(depth_format)
+				.with_rtv_formats({ color_format })
+				.with_debug_name(L"octree_debug_view_pso")
 			.build(device);
 
 			//Add some nodes
@@ -796,8 +823,6 @@ int main()
 				{
 					command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
 					command_list->SetGraphicsRootSignature(global_root_signature.Get());
-					command_list->SetPipelineState(first_node_pipeline_state.Get());
-
 					command_list->SetGraphicsRootConstantBufferView(0, global_constant_buffers[frame_data.current_backbuffer_index].GetGPUVirtualAddress());
 
 					RenderGraphOutput& color_output = self.GetOutput("color");
@@ -832,8 +857,25 @@ int main()
 
 					if (optional<GltfScene> gltf_scene = gltf_task_result.get())
 					{
-						UINT instance_count = (UINT)gltf_scene->instances_array.size();
+						command_list->SetPipelineState(first_node_pso.Get());
+						UINT instance_count = (UINT) gltf_scene->instances_array.size();
 						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_gpu_buffer.GetResource(), 0, nullptr, 0);
+					}
+
+					//Octree Debug View
+					//FCS TODO: Way too many nodes for this.
+					{
+						command_list->SetPipelineState(octree_debug_view_pso.Get());
+						uint32_t constants[2] =
+						{
+							uv_sphere_instance_buffer.GetBindlessResourceIndex(), 	// instance_buffer_index
+							0,														// instance_id
+						};
+						command_list->SetGraphicsRoot32BitConstants(1, 2, constants, 0);
+						UINT instance_count = (UINT) octree.size();
+
+						//FCS TODO: Weird GPU Memory corruption if too many octree nodes. No idea why
+						command_list->DrawInstanced(uv_sphere.indices_count, instance_count, 0, 0);
 					}
 				},
 			});

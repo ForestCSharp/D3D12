@@ -97,28 +97,243 @@ optional<GltfBufferData> GetAttributeBuffer(cgltf_primitive& in_primitive, cgltf
 	return nullopt;
 };
 
-// Takes in a staging buffer and buffer desc
-GpuBuffer staging_upload_helper(GltfLoadContext& in_load_ctx, const GpuBufferDesc& in_buffer_desc, void* in_data, size_t in_data_size)
+// Resources used to perform the transfer
+struct BufferUploadResources
 {
-	const bool needs_staging_buffer = !(in_buffer_desc.heap_type & D3D12_HEAP_TYPE_UPLOAD);
+	ComPtr<ID3D12Device5> device;
+	ComPtr<ID3D12CommandQueue> command_queue;
+	ComPtr<ID3D12CommandAllocator> command_allocator;
+	ComPtr<ID3D12GraphicsCommandList> command_list;
+	mutable GpuBuffer staging_buffer;
+};
+
+// Actual data we want to upload
+struct BufferUploadData
+{
+	GpuBufferDesc buffer_desc;
+	void* buffer_data;
+	size_t buffer_data_size;
+};
+
+GpuBuffer staging_upload_helper(const BufferUploadResources& upload_context, const BufferUploadData& upload_data)
+{
+	const bool needs_staging_buffer = !(upload_data.buffer_desc.heap_type & D3D12_HEAP_TYPE_UPLOAD);
 	assert(needs_staging_buffer);
 
-	in_load_ctx.staging_buffer.Write(in_data, in_data_size);
+	upload_context.staging_buffer.Write(upload_data.buffer_data, upload_data.buffer_data_size);
 
-	GpuBuffer new_buffer(in_buffer_desc);
+	GpuBuffer new_buffer(upload_data.buffer_desc);
 
-	HR_CHECK(in_load_ctx.command_list->Reset(in_load_ctx.command_allocator.Get(), nullptr));
-	in_load_ctx.command_list->CopyBufferRegion(new_buffer.GetResource(), 0, in_load_ctx.staging_buffer.GetResource(), 0, in_data_size);
-	HR_CHECK(in_load_ctx.command_list->Close());
+	HR_CHECK(upload_context.command_list->Reset(upload_context.command_allocator.Get(), nullptr));
+	upload_context.command_list->CopyBufferRegion(new_buffer.GetResource(), 0, upload_context.staging_buffer.GetResource(), 0, upload_data.buffer_data_size);
+	HR_CHECK(upload_context.command_list->Close());
 
-	ID3D12CommandList* ppCommandLists[] = { in_load_ctx.command_list.Get() };
-	in_load_ctx.command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+	ID3D12CommandList* ppCommandLists[] = { upload_context.command_list.Get() };
+	upload_context.command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
 	//TODO: Just wait on some event. No need to wait for idle
-	wait_gpu_idle(in_load_ctx.device, in_load_ctx.command_queue);
+	wait_gpu_idle(upload_context.device, upload_context.command_queue);
 
 	return new_buffer;
 }
+
+// Simple wrapper around more generic staging_upload_helper
+GpuBuffer gltf_staging_upload_helper(const GltfLoadContext& in_load_ctx, const GpuBufferDesc& in_buffer_desc, void* in_data, size_t in_data_size)
+{
+	BufferUploadResources upload_context = 
+	{
+		.device = in_load_ctx.device,
+		.command_queue = in_load_ctx.command_queue,
+		.command_allocator = in_load_ctx.command_allocator,
+		.command_list = in_load_ctx.command_list,
+		.staging_buffer = in_load_ctx.staging_buffer
+	};
+
+	BufferUploadData upload_data =
+	{
+		.buffer_desc = in_buffer_desc,
+		.buffer_data = in_data,
+		.buffer_data_size = in_data_size,
+	};
+
+	return staging_upload_helper(upload_context, upload_data);
+}
+
+//BEGIN FCS TODO: MOVE TO OWN FILE
+
+// 1. Add single SG to octree (keep color for debug vis?)
+// 2. Draw sphere at ea. octree leaf center and debug vis that SG value
+// 3. Use randomly generated SG to view "Global Illumination"
+// 4. Replace single SG with SG Basis and debug vis that
+// 5. Again, randomly generate
+// 6. Actually compute "real" values for each SGBasis, using raytracing
+
+//{
+//	BufferUploadContext upload_context = 
+//	{
+//		.device = load_ctx.device,
+//		.command_queue = load_ctx.command_queue,
+//		.command_allocator = load_ctx.command_allocator,
+//		.command_list = load_ctx.command_list,
+//		.staging_buffer = load_ctx.staging_buffer
+//	};
+//	UVSphere test_sphere(upload_context, load_ctx.allocator, 500.0f, 24, 24);
+//	load_ctx.bindless_resource_manager->RegisterSRV(test_sphere.vertex_buffer, test_sphere.vertices_count, sizeof(Vertex));
+//	load_ctx.bindless_resource_manager->RegisterSRV(test_sphere.index_buffer, test_sphere.indices_count, sizeof(uint32_t));
+//}
+
+struct UVSphereDesc
+{
+	ComPtr<ID3D12Device5> device;
+	ComPtr<ID3D12CommandQueue> command_queue;
+	ComPtr<ID3D12CommandAllocator> command_allocator;
+	ComPtr<ID3D12GraphicsCommandList> command_list;
+	D3D12MA::Allocator* allocator;
+
+	float radius;
+	int latitudes;
+	int longitudes;
+};
+
+struct UVSphere
+{
+	GpuBuffer vertex_buffer;
+	uint32_t vertices_count;
+	GpuBuffer index_buffer;
+	uint32_t indices_count;
+
+	UVSphere(const UVSphereDesc& desc)
+	{
+		vector<Vertex> vertices;
+		vector<uint32_t> indices;
+		//TODO: Reserve space in vertices and indices
+
+		const float radius = desc.radius;
+		const int latitudes = max(2, desc.latitudes);
+		const int longitudes = max(3, desc.longitudes);
+
+		float deltaLatitude = (float)Constants::PI / latitudes;
+		float deltaLongitude = 2.0f * (float)Constants::PI / longitudes;
+		float latitudeAngle;
+		float longitudeAngle;
+
+		// Compute all vertices first except normals
+		for (int i = 0; i <= latitudes; ++i)
+		{
+			latitudeAngle = (float)Constants::PI / 2.0f - i * deltaLatitude; /* Starting -pi/2 to pi/2 */
+			float xy = radius * cosf(latitudeAngle);    /* r * cos(phi) */
+			float z = radius * sinf(latitudeAngle);     /* r * sin(phi )*/
+
+			/*
+				* We add (latitudes + 1) vertices per longitude because of equator,
+				* the North pole and South pole are not counted here, as they overlap.
+				* The first and last vertices have same position and normal, but
+				* different tex coords.
+				*/
+			for (int j = 0; j <= longitudes; ++j)
+			{
+				longitudeAngle = j * deltaLongitude;
+
+				Vertex vertex;
+
+				vertex.position.x = xy * cosf(longitudeAngle);       /* x = r * cos(phi) * cos(theta)  */
+				vertex.position.y = xy * sinf(longitudeAngle);       /* y = r * cos(phi) * sin(theta) */
+				vertex.position.z = z;                               /* z = r * sin(phi) */
+				vertex.texcoord.x = (float) j/longitudes;             /* s */
+				vertex.texcoord.y = (float) i/latitudes;              /* t */
+
+				const float lengthInv = 1.0f / radius; 
+				vertex.normal.x = vertex.position.x * lengthInv;
+				vertex.normal.y = vertex.position.y * lengthInv;
+				vertex.normal.z = vertex.position.z * lengthInv;
+				vertices.push_back(vertex);
+			}
+		}
+
+		/*
+			*  Indices
+			*  k1--k1+1
+			*  |  / |
+			*  | /  |
+			*  k2--k2+1
+			*/
+		unsigned int k1, k2;
+		for(int i = 0; i < latitudes; ++i)
+		{
+			k1 = i * (longitudes + 1);
+			k2 = k1 + longitudes + 1;
+			// 2 Triangles per latitude block excluding the first and last longitudes blocks
+			for(int j = 0; j < longitudes; ++j, ++k1, ++k2)
+			{
+				if (i != 0)
+				{
+					indices.push_back(k1);
+					indices.push_back(k2);
+					indices.push_back(k1 + 1);
+				}
+
+				if (i != (latitudes - 1))
+				{
+					indices.push_back(k1 + 1);
+					indices.push_back(k2);
+					indices.push_back(k2 + 1);
+				}
+			}
+		}
+
+		BufferUploadResources upload_resources =
+		{
+			.device = desc.device,
+			.command_queue = desc.command_queue,
+			.command_allocator = desc.command_allocator,
+			.command_list = desc.command_list,
+			.staging_buffer = GpuBuffer(GpuBufferDesc{
+				.allocator = desc.allocator,
+				.size = 1024,
+				.heap_type = D3D12_HEAP_TYPE_UPLOAD,
+				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+			})
+		};
+
+		size_t vertex_buffer_size = vertices.size() * sizeof(Vertex);
+		BufferUploadData vertex_upload_data =
+		{
+			.buffer_desc = 
+			{
+				.allocator = desc.allocator,
+				.size = vertex_buffer_size,
+				.heap_type = D3D12_HEAP_TYPE_DEFAULT,
+				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+			},
+			.buffer_data = vertices.data(),
+			.buffer_data_size = vertex_buffer_size,
+		};
+
+		vertex_buffer = staging_upload_helper(upload_resources, vertex_upload_data);
+		vertices_count = (uint32_t) vertices.size();
+
+		size_t index_buffer_size = indices.size() * sizeof(uint32_t);
+		BufferUploadData index_upload_data =
+		{
+			.buffer_desc = 
+			{
+				.allocator = desc.allocator,
+				.size = index_buffer_size,
+				.heap_type = D3D12_HEAP_TYPE_DEFAULT,
+				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+			},
+			.buffer_data = indices.data(),
+			.buffer_data_size = index_buffer_size,
+		};
+		index_buffer = staging_upload_helper(upload_resources, index_upload_data);
+		indices_count = (uint32_t) indices.size();
+	}
+	
+};
+//END FCS TODO: MOVE TO OWN FILE
 
 //FCS TODO: Generic accessor data loading
 
@@ -161,7 +376,7 @@ void recurse_node(GltfLoadContext& load_ctx, cgltf_node* in_node, const Matrix& 
 					.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 					.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
 				};
-				index_buffer = staging_upload_helper(load_ctx, index_buffer_desc, index_data, index_buffer_size);
+				index_buffer = gltf_staging_upload_helper(load_ctx, index_buffer_desc, index_data, index_buffer_size);
 				indices_count = indices_data->count;
 
 				free(index_data);
@@ -221,7 +436,7 @@ void recurse_node(GltfLoadContext& load_ctx, cgltf_node* in_node, const Matrix& 
 					.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 					.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
 				};
-				vertex_buffer = staging_upload_helper(load_ctx, vertex_buffer_desc, vertices.data(), vertex_buffer_size);
+				vertex_buffer = gltf_staging_upload_helper(load_ctx, vertex_buffer_desc, vertices.data(), vertex_buffer_size);
 				load_ctx.bindless_resource_manager->RegisterSRV(vertex_buffer, (uint32_t) vertices_count, sizeof(Vertex));
 			}
 
@@ -336,7 +551,7 @@ struct GltfScene
 				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 				.resource_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 			};
-			indirect_draw_gpu_buffer = staging_upload_helper(load_ctx, indirect_draw_buffer_desc, indirect_draw_array.data(), indirect_draw_buffer_size);
+			indirect_draw_gpu_buffer = gltf_staging_upload_helper(load_ctx, indirect_draw_buffer_desc, indirect_draw_array.data(), indirect_draw_buffer_size);
 
 			// Write out GPU Data for instances
 			//TODO: instances_buffer can now be D3D12_HEAP_TYPE_DEFAULT
