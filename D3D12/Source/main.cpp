@@ -75,6 +75,15 @@ size_t octree_space_requirements(const size_t octree_depth)
 	return (ipow(8, octree_depth + 1) - 1) / (8 - 1);
 }
 
+inline float3 rand_unit_vec()
+{
+	float theta = rand_range( 0.0f, 2.0f * (float)Constants::PI );	
+	float r = sqrt(rand_range( 0.0f, 1.0f ));	
+	float z = sqrt(1.0f - r*r) * (rand_bool() ? -1.0f : 1.0f);
+	
+	return float3(r * cos(theta), r * sin(theta), z);
+}
+
 int octree_node_init(std::vector<OctreeNode>& octree, const float3& node_center, const float extents, const size_t current_depth)
 {
 	assert(current_depth >= 0);
@@ -88,7 +97,9 @@ int octree_node_init(std::vector<OctreeNode>& octree, const float3& node_center,
 	octree[index].max = node_center + float3(extents / 2.0f);
 	
 	//FCS TODO: Temp payload. replace with SGBasis
-	octree[index].color = float3(rand_norm(), rand_norm(), rand_norm());
+	octree[index].sg.Amplitude = rand_unit_vec() * rand_range(0, 5);
+	octree[index].sg.Axis = rand_unit_vec();
+	octree[index].sg.Sharpness = rand_range(0, 1);
 
 	if (!octree[index].is_leaf)
 	{
@@ -351,9 +362,14 @@ int main()
 	ShowWindow(window, SW_SHOW);
 
 	ComPtr<ID3D12Debug> debug_controller;
+	ComPtr<ID3D12Debug1> debug_controller_1;
 	if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller))))
 	{
 		debug_controller->EnableDebugLayer();
+		if (SUCCEEDED(debug_controller->QueryInterface(IID_PPV_ARGS(&debug_controller_1))))
+		{
+			debug_controller_1->SetEnableGPUBasedValidation(true);
+		}
 	}
 
 	// 2. Create a D3D12 Factory, Adapter, and Device

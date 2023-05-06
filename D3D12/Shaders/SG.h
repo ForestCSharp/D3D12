@@ -20,11 +20,11 @@ struct SGBasis
 	SG lobes[SG_BASIS_LOBE_COUNT];
 };
 
-struct SGProbe
-{
-	SGBasis basis;
-	float3 position;
-};
+//struct SGProbe
+//{
+//	SGBasis basis;
+//	float3 position;
+//};
 
 struct OctreeNode
 {
@@ -32,8 +32,8 @@ struct OctreeNode
 	bool is_leaf;
 	int children[2][2][2]; //x,y,z 0 idx is less than 1 idx for given component
 
-	//FCS TODO: Temp payload, replace with SGBasis
-	float3 color;
+	//FCS TODO: Replace with SGBasis or SGProbe
+	SG sg;
 };
 
 #ifndef __cplusplus
@@ -52,17 +52,14 @@ inline int Octree_FindRelevantChild(OctreeNode node, float3 position)
 	return node.children[x][y][z];
 }
 
-inline OctreeNode Octree_Search(uint octree_bindless_idx, float3 position)
+inline bool Octree_Search(uint octree_bindless_idx, float3 position, out OctreeNode out_node)
 {
 	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[octree_bindless_idx];
 	OctreeNode current_node = octree[0];
 
 	if (!Octree_IsValidPosition(current_node, position))
 	{
-		//FCS TODO: better return for outside octree extents...
-		OctreeNode dummy_node;
-		dummy_node.color = float3(0, 0, 0);
-		return dummy_node;
+		return false;
 	}
 
 	while (!current_node.is_leaf)
@@ -74,8 +71,9 @@ inline OctreeNode Octree_Search(uint octree_bindless_idx, float3 position)
 		}
 		current_node = octree[child_idx];
 	}
-
-	return current_node;
+	
+	out_node = current_node;
+	return true;
 }
 
 #define PI 3.141592653589793

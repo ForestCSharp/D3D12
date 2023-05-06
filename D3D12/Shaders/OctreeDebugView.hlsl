@@ -49,5 +49,6 @@ float4 PixelShader(const PsInput input) : SV_TARGET
 {
 	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[global_constant_buffer.octree_index];
 	const OctreeNode octree_node = octree[input.octree_node_index];
-	return float4(1,0,0,0);
+	float3 result = SG_Evaluate(octree_node.sg, input.normal);
+	return float4(result,1);
 }

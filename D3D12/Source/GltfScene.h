@@ -115,6 +115,7 @@ struct BufferUploadData
 	size_t buffer_data_size;
 };
 
+//FCS TODO: Should create new buffer with COPY_DEST and then transition to final resource state with a barrier
 GpuBuffer staging_upload_helper(const BufferUploadResources& upload_context, const BufferUploadData& upload_data)
 {
 	const bool needs_staging_buffer = !(upload_data.buffer_desc.heap_type & D3D12_HEAP_TYPE_UPLOAD);
@@ -122,7 +123,9 @@ GpuBuffer staging_upload_helper(const BufferUploadResources& upload_context, con
 
 	upload_context.staging_buffer.Write(upload_data.buffer_data, upload_data.buffer_data_size);
 
-	GpuBuffer new_buffer(upload_data.buffer_desc);
+	GpuBufferDesc modified_buffer_desc = upload_data.buffer_desc;
+	modified_buffer_desc.resource_state |= D3D12_RESOURCE_STATE_COPY_DEST;
+	GpuBuffer new_buffer(modified_buffer_desc);
 
 	HR_CHECK(upload_context.command_list->Reset(upload_context.command_allocator.Get(), nullptr));
 	upload_context.command_list->CopyBufferRegion(new_buffer.GetResource(), 0, upload_context.staging_buffer.GetResource(), 0, upload_data.buffer_data_size);
@@ -167,20 +170,6 @@ GpuBuffer gltf_staging_upload_helper(const GltfLoadContext& in_load_ctx, const G
 // 4. Replace single SG with SG Basis and debug vis that
 // 5. Again, randomly generate
 // 6. Actually compute "real" values for each SGBasis, using raytracing
-
-//{
-//	BufferUploadContext upload_context = 
-//	{
-//		.device = load_ctx.device,
-//		.command_queue = load_ctx.command_queue,
-//		.command_allocator = load_ctx.command_allocator,
-//		.command_list = load_ctx.command_list,
-//		.staging_buffer = load_ctx.staging_buffer
-//	};
-//	UVSphere test_sphere(upload_context, load_ctx.allocator, 500.0f, 24, 24);
-//	load_ctx.bindless_resource_manager->RegisterSRV(test_sphere.vertex_buffer, test_sphere.vertices_count, sizeof(Vertex));
-//	load_ctx.bindless_resource_manager->RegisterSRV(test_sphere.index_buffer, test_sphere.indices_count, sizeof(uint32_t));
-//}
 
 struct UVSphereDesc
 {
@@ -292,7 +281,7 @@ struct UVSphere
 				.size = 1024,
 				.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+				.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
 			})
 		};
 
@@ -472,7 +461,7 @@ struct GltfScene
 				.size = 1024,
 				.heap_type = D3D12_HEAP_TYPE_UPLOAD,
 				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-				.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+				.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
 			};
 
 			// Set up command allocator/list for staging buffer copies

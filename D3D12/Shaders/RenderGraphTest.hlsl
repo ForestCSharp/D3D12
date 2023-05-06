@@ -45,7 +45,14 @@ PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : S
 
 float4 FirstNodePixelShader(const PsInput input) : SV_TARGET
 {
-	const OctreeNode octree_node = Octree_Search(global_constant_buffer.octree_index, input.world_position);
-	const float3 octree_color = octree_node.color;
-	return float4(octree_color, 1);
+	OctreeNode octree_node;
+	if (Octree_Search(global_constant_buffer.octree_index, input.world_position, octree_node))
+	{
+		float3 result = SG_Evaluate(octree_node.sg, input.normal);
+		return float4(result, 1);
+	}
+	else
+	{	
+		return float4(0,0,0,0);
+	}
 }
