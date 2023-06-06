@@ -75,16 +75,20 @@ size_t octree_space_requirements(const size_t octree_depth)
 	return (ipow(8, octree_depth + 1) - 1) / (8 - 1);
 }
 
-inline float3 rand_unit_vec()
+inline const float3 rand_unit_vec()
 {
-	float theta = rand_range( 0.0f, 2.0f * (float)Constants::PI );	
-	float r = sqrt(rand_range( 0.0f, 1.0f ));	
+	float theta = rand_range(0.0f, 2.0f * (float)Constants::PI);	
+	float r = sqrt(rand_range(0.0f, 1.0f));	
 	float z = sqrt(1.0f - r*r) * (rand_bool() ? -1.0f : 1.0f);
-	
 	return float3(r * cos(theta), r * sin(theta), z);
 }
 
-int octree_node_init(std::vector<OctreeNode>& octree, const float3& node_center, const float extents, const size_t current_depth)
+//Testing: Making all SGs the same
+const float3 sg_test_amplitude = float3(1.f, 1.f, 1.f);
+const float sg_test_sharpness = 2.f;
+
+//TODO: also output list of leaf-nodes
+int octree_node_init(std::vector<OctreeNode>& octree, std::vector<OctreeNode>& octree_leaf_nodes, const float3& node_center, const float extents, const size_t current_depth)
 {
 	assert(current_depth >= 0);
 
@@ -97,9 +101,9 @@ int octree_node_init(std::vector<OctreeNode>& octree, const float3& node_center,
 	octree[index].max = node_center + float3(extents / 2.0f);
 	
 	//FCS TODO: Temp payload. replace with SGBasis
-	octree[index].sg.Amplitude = rand_unit_vec() * rand_range(0, 5);
-	octree[index].sg.Axis = rand_unit_vec();
-	octree[index].sg.Sharpness = rand_range(0, 1);
+	octree[index].sg.Amplitude = sg_test_amplitude;
+	octree[index].sg.Axis = Normalize(-node_center);
+	octree[index].sg.Sharpness = sg_test_sharpness;
 
 	if (!octree[index].is_leaf)
 	{
@@ -115,7 +119,7 @@ int octree_node_init(std::vector<OctreeNode>& octree, const float3& node_center,
 					const float child_y = y == 0 ? node_center.y - child_half_extents : node_center.y + child_half_extents;
 					const float child_z = z == 0 ? node_center.z - child_half_extents : node_center.z + child_half_extents;
 					const float3 child_center(child_x, child_y, child_z);
-					octree[index].children[x][y][z] = octree_node_init(octree, child_center, child_extents, current_depth - 1);
+					octree[index].children[x][y][z] = octree_node_init(octree, octree_leaf_nodes, child_center, child_extents, current_depth - 1);
 				}
 			}
 		}
@@ -452,9 +456,12 @@ int main()
 	constexpr float3 octree_center(0, 1000, 0);
 	constexpr size_t octree_depth = 5;
 	constexpr float octree_extents = 4000;
-	std::vector<OctreeNode> octree;
-	octree.reserve(octree_space_requirements(octree_depth));
-	octree_node_init(octree, octree_center, octree_extents, octree_depth);
+	std::vector<OctreeNode> octree_nodes; 
+	std::vector<OctreeNode> octree_leaf_nodes;
+	octree_nodes.reserve(octree_space_requirements(octree_depth));
+	octree_leaf_nodes.reserve(ipow(8, octree_depth));
+	octree_node_init(octree_nodes, octree_leaf_nodes, octree_center, octree_extents, octree_depth);
+	//FCS TODO: use octree_leaf_nodes for debug vis
 
 	UVSphere uv_sphere(UVSphereDesc{
 		.device = device,
@@ -489,7 +496,7 @@ int main()
 	// 2. If leaf node, actually output sphere in pixel shader, otherwise float4(0,0,0,0) 
 
 
-	const size_t octree_buffer_size = octree.size() * sizeof(OctreeNode);
+	const size_t octree_buffer_size = octree_nodes.size() * sizeof(OctreeNode);
 	GpuBuffer octree_buffer(GpuBufferDesc{
 		.allocator = gpu_memory_allocator,
 		.size = octree_buffer_size,
@@ -497,9 +504,9 @@ int main()
 		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
 		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
 	});
-	octree_buffer.Write(octree.data(), octree_buffer_size);
+	octree_buffer.Write(octree_nodes.data(), octree_buffer_size);
 	//FCS TODO: move to GPU-only memory
-	const uint32_t octree_srv_index =  bindless_resource_manager.RegisterSRV(octree_buffer, (uint32_t) octree.size(), sizeof(OctreeNode));
+	const uint32_t octree_srv_index =  bindless_resource_manager.RegisterSRV(octree_buffer, (uint32_t) octree_nodes.size(), sizeof(OctreeNode));
 
 	//1. Setup probe grid (with random SGBasis values)
 	//2. Debug draw spheres for each probe to confirm spacing
@@ -888,7 +895,7 @@ int main()
 							0,														// instance_id
 						};
 						command_list->SetGraphicsRoot32BitConstants(1, 2, constants, 0);
-						UINT instance_count = (UINT) octree.size();
+						UINT instance_count = (UINT) octree_nodes.size();
 
 						//FCS TODO: Weird GPU Memory corruption if too many octree nodes. No idea why
 						command_list->DrawInstanced(uv_sphere.indices_count, instance_count, 0, 0);

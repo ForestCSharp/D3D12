@@ -54,8 +54,8 @@ inline int Octree_FindRelevantChild(OctreeNode node, float3 position)
 
 inline bool Octree_Search(uint octree_bindless_idx, float3 position, out OctreeNode out_node)
 {
-	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[octree_bindless_idx];
-	OctreeNode current_node = octree[0];
+	StructuredBuffer<OctreeNode> octree_nodes = ResourceDescriptorHeap[octree_bindless_idx];
+	OctreeNode current_node = octree_nodes[0];
 
 	if (!Octree_IsValidPosition(current_node, position))
 	{
@@ -69,7 +69,7 @@ inline bool Octree_Search(uint octree_bindless_idx, float3 position, out OctreeN
 		{
 			break; // No child at this position, so terminate at non-leaf parent
 		}
-		current_node = octree[child_idx];
+		current_node = octree_nodes[child_idx];
 	}
 	
 	out_node = current_node;

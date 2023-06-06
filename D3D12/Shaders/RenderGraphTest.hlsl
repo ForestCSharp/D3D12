@@ -51,8 +51,6 @@ float4 FirstNodePixelShader(const PsInput input) : SV_TARGET
 		float3 result = SG_Evaluate(octree_node.sg, input.normal);
 		return float4(result, 1);
 	}
-	else
-	{	
-		return float4(0,0,0,0);
-	}
+
+	return float4(0,0,0,0);
 }
