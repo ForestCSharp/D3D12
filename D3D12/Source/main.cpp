@@ -642,7 +642,7 @@ int main()
 			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
 
-		const size_t gltf_scene_index = 1;
+		const size_t gltf_scene_index = 0;
 
 		GltfInitData gltf_init_data = {
 			.file = gltf_files[gltf_scene_index],
