@@ -26,6 +26,8 @@ using namespace DirectX::SimpleMath;
 #include <unordered_map> 
 #include <string>
 
+#include "microprofile/microprofile.h"
+
 #include "Common.h"
 #include "GpuResources.h"
 #include "GpuPipelines.h"
@@ -642,7 +644,7 @@ int main()
 			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
 
-		const size_t gltf_scene_index = 0;
+		const size_t gltf_scene_index = 1;
 
 		GltfInitData gltf_init_data = {
 			.file = gltf_files[gltf_scene_index],
@@ -657,6 +659,8 @@ int main()
 
 	while (!should_close)
 	{
+		MICROPROFILE_SCOPEI("default", "main loop", MP_YELLOW);
+
 		RECT client_rect;
 		if (GetClientRect(window, &client_rect))
 		{
@@ -664,6 +668,7 @@ int main()
 			LONG new_height = client_rect.bottom - client_rect.top;
 			if (new_width != render_width || new_height != render_height)
 			{
+				MICROPROFILE_SCOPEI("default", "resize", MP_RED);
 				render_width = new_width;
 				render_height = new_height;
 				printf("Width: %lu Height: %lu\n", new_width, new_height);
@@ -762,6 +767,7 @@ int main()
 		}
 
 		{ // Rendering
+			MICROPROFILE_SCOPEI("default", "render", MP_GREEN);
 
 			//FCS TODO: RenderGraph should manage its own command_list(s)... should pass in a command allocator to RenderGraphDesc
 			HR_CHECK(frame_data.get_command_allocator()->Reset());
@@ -972,6 +978,8 @@ int main()
 		{
 			should_close = true;
 		}
+
+		MicroProfileFlip(nullptr);
 	}
 
 	wait_gpu_idle(device, command_queue);

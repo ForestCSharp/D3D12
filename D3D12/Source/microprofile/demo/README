@@ -1,0 +1,14 @@
+
+This folder contains a few samples:
+
+Some of it has dependencies:
+SDL :
+		On Windows: unzip SDL2 into sdl2 subfolder below demo/ and build it, before compiling the samples
+		OSX/Linux: sdl2 should be compiled & installed, so that sdl2-config is available. 
+
+vulkan:
+	install vulkan sdk, and make sure VK_SDK_PATH is set
+
+
+Note that demo_workbench uses instrumentation, which requires you to build distorm.
+	build it using the files in distorm/make
