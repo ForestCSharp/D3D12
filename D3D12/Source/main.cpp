@@ -6,6 +6,8 @@
 // EASTL
 // Remove m_ from member vars
 
+#include "UVSphere.h"
+
 #include "GpuCommands.h"
 #include "RenderGraph.h"
 #include "ShaderCompiler.h"
@@ -35,6 +37,9 @@ using namespace DirectX::SimpleMath;
 
 #include "GltfScene.h"
 #include "ThreadPool.h"
+
+#define CGLTF_IMPLEMENTATION
+#include "cgltf/cgltf.h"
 
 using std::vector;
 using std::wstring;
@@ -467,10 +472,8 @@ int main()
 
 	UVSphere uv_sphere(UVSphereDesc{
 		.device = device,
-		.command_queue = command_queue,
-		.command_allocator = frame_data.get_command_allocator(),
-		.command_list = command_list,
 		.allocator = gpu_memory_allocator,
+		.command_queue = copy_queue,
 		.radius = 10.0f,
 		.latitudes = 12,
 		.longitudes = 12,
@@ -644,7 +647,7 @@ int main()
 			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
 
-		const size_t gltf_scene_index = 1;
+		const size_t gltf_scene_index = 0;
 
 		GltfInitData gltf_init_data = {
 			.file = gltf_files[gltf_scene_index],

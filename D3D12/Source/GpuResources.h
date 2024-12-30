@@ -18,8 +18,6 @@ using STL_IMPL::vector;
 
 using Microsoft::WRL::ComPtr;
 
-//TODO: Staging buffer uploads
-
 struct GpuBufferDesc
 {
 	D3D12MA::Allocator* allocator = nullptr;
@@ -185,6 +183,66 @@ protected:
 
 	friend struct BindlessResourceManager;
 };
+
+// Actual data we want to upload
+struct BufferUploadData
+{
+	GpuBufferDesc buffer_desc;
+	void* buffer_data;
+	size_t buffer_data_size;
+};
+
+struct BufferUploadDesc
+{
+	ComPtr<ID3D12Device5> device;
+	D3D12MA::Allocator* allocator;
+	ComPtr<ID3D12GraphicsCommandList> command_list;
+	BufferUploadData upload_data;
+};
+
+struct BufferUploadResult
+{
+	GpuBuffer staging_buffer;
+	GpuBuffer result_buffer;
+};
+
+// This function assumes in_upload_desc.command_list is in a valid, recordable state
+inline BufferUploadResult staging_upload_helper(const BufferUploadDesc& in_upload_desc)
+{
+	const BufferUploadData& upload_data = in_upload_desc.upload_data;
+
+	const bool needs_staging_buffer = !(upload_data.buffer_desc.heap_type & D3D12_HEAP_TYPE_UPLOAD);
+	assert(needs_staging_buffer);
+
+	GpuBuffer staging_buffer = GpuBuffer(GpuBufferDesc{
+		.allocator = in_upload_desc.allocator,
+		.size = upload_data.buffer_data_size,
+		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
+		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+		.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
+	});
+	staging_buffer.Write(
+		in_upload_desc.upload_data.buffer_data, 
+		in_upload_desc.upload_data.buffer_data_size
+	);
+
+	GpuBufferDesc modified_buffer_desc = upload_data.buffer_desc;
+	modified_buffer_desc.resource_state |= D3D12_RESOURCE_STATE_COPY_DEST;
+	GpuBuffer result_buffer(modified_buffer_desc);
+
+	in_upload_desc.command_list->CopyBufferRegion(
+		result_buffer.GetResource(), 0, 
+		staging_buffer.GetResource(), 0, 
+		upload_data.buffer_data_size
+	);
+
+	BufferUploadResult upload_result = {
+		.staging_buffer = staging_buffer,
+		.result_buffer = result_buffer,
+	};
+
+	return upload_result;
+}
 
 struct BindlessResourceManager
 {
