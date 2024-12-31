@@ -1,11 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 
-// FCS TODO:
-// Standardize formatting
-// EASTL
-// Remove m_ from member vars
-
 #include "UVSphere.h"
 
 #include "GpuCommands.h"
@@ -24,8 +19,11 @@
 #include "SimpleMath/SimpleMath.h"
 using namespace DirectX::SimpleMath;
 
+#include "Ankerl/unordered_dense.h"
+template<typename Key, typename Value>
+using HashMap = ankerl::unordered_dense::map<Key, Value>;
+
 #include <vector>
-#include <unordered_map> 
 #include <string>
 
 #include "microprofile/microprofile.h"
@@ -55,6 +53,11 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\
 bool IsKeyPressed(int in_key)
 {
 	return GetKeyState(in_key) < 0;
+}
+
+bool WasKeyJustClicked(int in_key)
+{
+	return GetAsyncKeyState(in_key) & 0x0001;
 }
 
 #define ROUND_UP(num, multiple) ((num + multiple - 1) / multiple) * multiple
@@ -92,10 +95,15 @@ inline const float3 rand_unit_vec()
 
 //Testing: Making all SGs the same
 const float3 sg_test_amplitude = float3(1.f, 1.f, 1.f);
-const float sg_test_sharpness = 2.f;
+const float sg_test_sharpness = 5.f;
 
-//TODO: also output list of leaf-nodes
-int octree_node_init(std::vector<OctreeNode>& octree, std::vector<OctreeNode>& octree_leaf_nodes, const float3& node_center, const float extents, const size_t current_depth)
+int octree_node_init(
+	std::vector<OctreeNode>& octree, 
+	std::vector<uint32_t>& octree_leaf_nodes, 
+	const float3& node_center, 
+	const float extents, 
+	const size_t current_depth
+)
 {
 	assert(current_depth >= 0);
 
@@ -126,10 +134,20 @@ int octree_node_init(std::vector<OctreeNode>& octree, std::vector<OctreeNode>& o
 					const float child_y = y == 0 ? node_center.y - child_half_extents : node_center.y + child_half_extents;
 					const float child_z = z == 0 ? node_center.z - child_half_extents : node_center.z + child_half_extents;
 					const float3 child_center(child_x, child_y, child_z);
-					octree[index].children[x][y][z] = octree_node_init(octree, octree_leaf_nodes, child_center, child_extents, current_depth - 1);
+					octree[index].children[x][y][z] = octree_node_init(
+						octree, 
+						octree_leaf_nodes, 
+						child_center, 
+						child_extents, 
+						current_depth - 1
+					);
 				}
 			}
 		}
+	}
+	else
+	{
+		octree_leaf_nodes.push_back(static_cast<uint32_t>(index));
 	}
 
 	return static_cast<int>(index);
@@ -254,8 +272,6 @@ struct FrameData
 			render_targets[i].Reset();
 			command_allocators[i].Reset();
 		}
-
-		//TODO: free up other resources
 	}
 
 	ID3D12CommandAllocator* get_command_allocator() const
@@ -273,8 +289,7 @@ struct FrameData
 		HR_CHECK(swapchain->Present(1, 0));
 	}
 
-	//TODO: Method for registering other per-frame resources
-	unordered_map<UINT64, vector<RenderGraph>> pending_render_graphs;
+	HashMap<UINT64, vector<RenderGraph>> pending_render_graphs;
 	void register_graph(RenderGraph&& in_resource)
 	{
 		pending_render_graphs[fence_values[current_backbuffer_index]].push_back(move(in_resource));
@@ -304,7 +319,6 @@ struct FrameData
 	}
 };
 
-//TODO: Store in some sort of App singleton?
 bool should_close = false;
 int mouse_x = 0;
 int mouse_y = 0;
@@ -333,12 +347,6 @@ int main()
 {
 	const size_t thread_count = max(1, std::thread::hardware_concurrency() - 1);
 	ThreadPool thread_pool(thread_count);
-
-	//FCS TODO BEGIN: Organize all these variables (set them up as created farther down)
-	ComPtr<IDXGIFactory4> factory;
-	ComPtr<IDXGIAdapter1> adapter;
-	ComPtr<ID3D12Device5> device;
-	//FCS TODO END
 
 	// 1. Create Our Window
 	HINSTANCE h_instance = GetModuleHandle(nullptr);
@@ -384,6 +392,10 @@ int main()
 	}
 
 	// 2. Create a D3D12 Factory, Adapter, and Device
+	ComPtr<IDXGIFactory4> factory;
+	ComPtr<IDXGIAdapter1> adapter;
+	ComPtr<ID3D12Device5> device;
+
 	UINT dxgi_factory_flags = DXGI_CREATE_FACTORY_DEBUG;
 	HR_CHECK(CreateDXGIFactory2(dxgi_factory_flags, IID_PPV_ARGS(&factory)));
 	for (UINT adapter_index = 0; DXGI_ERROR_NOT_FOUND != factory->EnumAdapters1(adapter_index, &adapter); ++adapter_index)
@@ -460,21 +472,28 @@ int main()
 	//FCS TODO: BEGIN TESTING SGs
 
 	//FCS TODO: Calculate center/bounds of scene and use that to inform extents and center
+	static bool enable_octree_debug_view = false;
 	constexpr float3 octree_center(0, 1000, 0);
-	constexpr size_t octree_depth = 5;
-	constexpr float octree_extents = 4000;
+	constexpr size_t octree_depth = 6;
+	constexpr float octree_extents = 20000;
 	std::vector<OctreeNode> octree_nodes; 
-	std::vector<OctreeNode> octree_leaf_nodes;
+	std::vector<uint32_t> octree_leaf_nodes;
 	octree_nodes.reserve(octree_space_requirements(octree_depth));
 	octree_leaf_nodes.reserve(ipow(8, octree_depth));
-	octree_node_init(octree_nodes, octree_leaf_nodes, octree_center, octree_extents, octree_depth);
+	octree_node_init(
+		octree_nodes, 
+		octree_leaf_nodes,
+		octree_center, 
+		octree_extents, 
+		octree_depth
+	);
 	//FCS TODO: use octree_leaf_nodes for debug vis
 
 	UVSphere uv_sphere(UVSphereDesc{
 		.device = device,
 		.allocator = gpu_memory_allocator,
 		.command_queue = copy_queue,
-		.radius = 10.0f,
+		.radius = 20.0f,
 		.latitudes = 12,
 		.longitudes = 12,
 	});
@@ -496,11 +515,6 @@ int main()
 	uv_sphere_instance_buffer.Write(&uv_sphere_instance_data, sizeof(uv_sphere_instance_data));
 	bindless_resource_manager.RegisterSRV(uv_sphere_instance_buffer, 1, sizeof(GpuInstanceData));
 
-	//FCS TODO: 
-	// 1. Draw instanced with octree.size()
-	// 2. If leaf node, actually output sphere in pixel shader, otherwise float4(0,0,0,0) 
-
-
 	const size_t octree_buffer_size = octree_nodes.size() * sizeof(OctreeNode);
 	GpuBuffer octree_buffer(GpuBufferDesc{
 		.allocator = gpu_memory_allocator,
@@ -510,8 +524,27 @@ int main()
 		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
 	});
 	octree_buffer.Write(octree_nodes.data(), octree_buffer_size);
-	//FCS TODO: move to GPU-only memory
-	const uint32_t octree_srv_index =  bindless_resource_manager.RegisterSRV(octree_buffer, (uint32_t) octree_nodes.size(), sizeof(OctreeNode));
+	const uint32_t octree_bindless_id = bindless_resource_manager.RegisterSRV(
+		octree_buffer, 
+		(uint32_t) octree_nodes.size(), 
+		sizeof(OctreeNode)
+	);
+
+	// For fast access when doing octree leaf debug view
+	const size_t octree_leaf_indices_buffer_size = octree_leaf_nodes.size() * sizeof(uint32_t);
+	GpuBuffer octree_leaf_indices_buffer(GpuBufferDesc{	
+		.allocator = gpu_memory_allocator,
+		.size = octree_leaf_indices_buffer_size,
+		.heap_type = D3D12_HEAP_TYPE_UPLOAD,
+		.resource_flags = D3D12_RESOURCE_FLAG_NONE,
+		.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ
+	});
+	octree_leaf_indices_buffer.Write(octree_leaf_nodes.data(), octree_leaf_indices_buffer_size);
+	const uint32_t octree_leaf_indices_bindless_id = bindless_resource_manager.RegisterSRV(
+		octree_leaf_indices_buffer, 
+		(uint32_t) octree_leaf_nodes.size(), 
+		sizeof(uint32_t)
+	);
 
 	//1. Setup probe grid (with random SGBasis values)
 	//2. Debug draw spheres for each probe to confirm spacing
@@ -524,7 +557,8 @@ int main()
 	GlobalConstantBuffer global_constant_buffer_data =
 	{
 		.sun_dir = Vector4(0.5, 0.25, 1, 0),
-		.octree_index = octree_srv_index,
+		.octree = octree_bindless_id,
+		.octree_leaf_nodes = octree_leaf_indices_bindless_id,
 	};
 	const size_t global_constant_buffer_size = ROUND_UP(sizeof(GlobalConstantBuffer), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
@@ -619,7 +653,11 @@ int main()
 			.NodeMask = 0,
 		};
 
-		HR_CHECK(device->CreateCommandSignature(&command_signature_desc, global_root_signature.Get(), IID_PPV_ARGS(&indirect_command_signature)));
+		HR_CHECK(device->CreateCommandSignature(
+			&command_signature_desc, 
+			global_root_signature.Get(), 
+			IID_PPV_ARGS(&indirect_command_signature)
+		));
 	}
 
 	Vector3 cam_pos = Vector3(5, 5, -5);
@@ -758,6 +796,12 @@ int main()
 			global_constant_buffer_data.projection_inverse = proj.Invert();
 		}
 
+		// Enable/Disable Octree Debug View
+		if (WasKeyJustClicked('O'))
+		{
+			enable_octree_debug_view = !enable_octree_debug_view;
+		}
+
 		//Update current frame's constant buffer
 		global_constant_buffers[frame_data.current_backbuffer_index].Write(&global_constant_buffer_data, sizeof(global_constant_buffer_data));
 
@@ -803,15 +847,15 @@ int main()
 			};
 
 			// Static to prevent cleanup / recreation. TODO: pool these in some manager.
-			static ComPtr<ID3D12PipelineState> first_node_pso = GraphicsPipelineBuilder()
+			static ComPtr<ID3D12PipelineState> visibility_pso = GraphicsPipelineBuilder()
 				.with_root_signature(global_root_signature)
-				.with_vs(CompileVertexShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodeVertexShader"))
-				.with_ps(CompilePixelShader(L"Shaders/RenderGraphTest.hlsl", L"FirstNodePixelShader"))
+				.with_vs(CompileVertexShader(L"Shaders/Visibility.hlsl", L"VertexShader"))
+				.with_ps(CompilePixelShader(L"Shaders/Visibility.hlsl", L"PixelShader"))
 				.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
 				.with_depth_enabled(true)
 				.with_dsv_format(depth_format)
 				.with_rtv_formats({ color_format })
-				.with_debug_name(L"first_node_pso")
+				.with_debug_name(L"visibility_pso")
 			.build(device);
 
 			static ComPtr<ID3D12PipelineState> octree_debug_view_pso = GraphicsPipelineBuilder()
@@ -828,7 +872,7 @@ int main()
 			//Add some nodes
 			render_graph.AddNode(RenderGraphNodeDesc
 			{
-				.name = "first_node",
+				.name = "visibility",
 				.setup = [&](RenderGraphNode& self)
 				{
 					self.AddTextureOutput("color", RenderGraphTextureDesc
@@ -889,13 +933,13 @@ int main()
 
 					if (optional<GltfScene> gltf_scene = gltf_task_result.get())
 					{
-						command_list->SetPipelineState(first_node_pso.Get());
+						command_list->SetPipelineState(visibility_pso.Get());
 						UINT instance_count = (UINT) gltf_scene->instances_array.size();
 						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_gpu_buffer.GetResource(), 0, nullptr, 0);
 					}
 
 					//Octree Debug View
-					//FCS TODO: Way too many nodes for this.
+					if (enable_octree_debug_view)
 					{
 						command_list->SetPipelineState(octree_debug_view_pso.Get());
 						uint32_t constants[2] =
@@ -904,7 +948,7 @@ int main()
 							0,														// instance_id
 						};
 						command_list->SetGraphicsRoot32BitConstants(1, 2, constants, 0);
-						UINT instance_count = (UINT) octree_nodes.size();
+						UINT instance_count = (UINT) octree_leaf_nodes.size();
 
 						//FCS TODO: Weird GPU Memory corruption if too many octree nodes. No idea why
 						command_list->DrawInstanced(uv_sphere.indices_count, instance_count, 0, 0);
@@ -954,7 +998,7 @@ int main()
 			// Add connection
 			render_graph.AddEdge(RenderGraphEdge
 			{
-				.incoming_node = "first_node",
+				.incoming_node = "visibility",
 				.incoming_resource = "color",
 				.outgoing_node = "copy_to_backbuffer",
 				.outgoing_resource = "input",

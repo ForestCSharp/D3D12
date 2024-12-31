@@ -19,7 +19,7 @@ struct PsInput
 	float3 world_position : TEXCOORD1;
 };
 
-PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
+PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
 {
     //TODO: Common helper fn to fetch vertex from vertex_id and instance_id
 	StructuredBuffer<GpuInstanceData> instances = ResourceDescriptorHeap[draw_constants.instance_buffer_index];
@@ -43,10 +43,10 @@ PsInput FirstNodeVertexShader(uint vertex_id : SV_VertexID, uint instance_id : S
     return ps_input;
 }
 
-float4 FirstNodePixelShader(const PsInput input) : SV_TARGET
+float4 PixelShader(const PsInput input) : SV_TARGET
 {
 	OctreeNode octree_node;
-	if (Octree_Search(global_constant_buffer.octree_index, input.world_position, octree_node))
+	if (Octree_Search(global_constant_buffer.octree, input.world_position, octree_node))
 	{
 		float3 result = SG_Evaluate(octree_node.sg, input.normal);
 		return float4(result, 1);

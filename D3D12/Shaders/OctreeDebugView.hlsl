@@ -27,8 +27,9 @@ PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_Instanc
     StructuredBuffer<Vertex> vertices = ResourceDescriptorHeap[instance.vertex_buffer_index];
     Vertex vertex = vertices[indices[vertex_id]];
 
-	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[global_constant_buffer.octree_index];
-	const OctreeNode octree_node = octree[instance_id];
+	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[global_constant_buffer.octree];
+	StructuredBuffer<uint> octree_leaf_nodes = ResourceDescriptorHeap[global_constant_buffer.octree_leaf_nodes];
+	const OctreeNode octree_node = octree[octree_leaf_nodes[instance_id]];
 	const float3 octree_node_position = (octree_node.min + octree_node.max) / 2.0f;
 
     const float4x4 proj_view = mul(global_constant_buffer.projection, global_constant_buffer.view);
@@ -47,8 +48,10 @@ PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_Instanc
 
 float4 PixelShader(const PsInput input) : SV_TARGET
 {
-	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[global_constant_buffer.octree_index];
-	const OctreeNode octree_node = octree[input.octree_node_index];
+	StructuredBuffer<OctreeNode> octree = ResourceDescriptorHeap[global_constant_buffer.octree];
+	StructuredBuffer<uint> octree_leaf_nodes = ResourceDescriptorHeap[global_constant_buffer.octree_leaf_nodes];
+	const OctreeNode octree_node = octree[octree_leaf_nodes[input.octree_node_index]];
+
 	float3 result = SG_Evaluate(octree_node.sg, input.normal);
 	return float4(result,1);
 }

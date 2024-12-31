@@ -84,6 +84,8 @@ struct IndirectDrawData
 	INDIRECT_DRAW_ARGS draw_arguments;
 };
 
+typedef uint BindlessID;
+
 struct GlobalConstantBuffer
 {
     // Camera data
@@ -94,14 +96,19 @@ struct GlobalConstantBuffer
 
     // Old Raytracing-pass specific data
     float4 sun_dir;
-    uint lighting_buffer_index;
-    uint output_buffer_index;
-    uint tlas_buffer_index;
+
     uint frames_rendered;
     uint random;
 
+	// Raytracing Bindless Resources
+    BindlessID output_buffer_index;
+    BindlessID tlas_buffer_index;
+
 	//SG octree
-	uint octree_index;
+	BindlessID octree;
+
+	// SG octree leaf node indices
+	BindlessID octree_leaf_nodes;
 };
 
 struct RayPayload

@@ -360,6 +360,7 @@ struct GltfScene
 			load_ctx.command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
 			wait_gpu_idle(load_ctx.device, load_ctx.command_queue);
+			load_ctx.pending_buffer_uploads.clear();
 		}
 
 		cgltf_free(data);
@@ -389,10 +390,10 @@ struct GltfScene
 // 5. Again, randomly generate
 // 6. Actually compute "real" values for each SGBasis, using raytracing
 
-// TODO: properly handle instances (i.e. multiple nodes pointing to the same mesh)
+//FCS TODO: properly handle instances (i.e. multiple nodes pointing to the same mesh)
 // ^ A new instance will be added with its own xform, but the vertex/index buffer bindless indices will be shared
 
-/* 	TODO: Prefer loading binary. Load GLTF and Re-Save to Binary if
+/* 	FCS TODO: Prefer loading binary. Load GLTF and Re-Save to Binary if
  * 		- Binary doesn't exist
  * 		- GLTF File Age has changed
  * 		- Binary format version bump
