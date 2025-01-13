@@ -9,7 +9,7 @@
 #include <wrl.h>
 #include <cstdint>
 #include <string>
-#include "dxcapi.h"
+#include "../dxc/inc/dxcapi.h"
 #include "debugapi.h"
 
 #include "Common.h"
@@ -195,7 +195,7 @@ struct GraphicsPipelineBuilder
 			input_element_desc.SemanticName = input_element_reflection.SemanticName;
 			input_element_desc.SemanticIndex = input_element_reflection.SemanticIndex;
 			input_element_desc.Format = get_format_from_parameter_reflection(input_element_reflection);
-			input_element_desc.InputSlot = 0; //TODO?
+			input_element_desc.InputSlot = 0;
 			input_element_desc.AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
 			input_element_desc.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 			input_element_desc.InstanceDataStepRate = 0;

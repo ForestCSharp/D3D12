@@ -15,6 +15,7 @@
 #include <DirectXMath.h>
 #include <wrl.h>
 #include <cstdio>
+#include <chrono>
 
 #include "SimpleMath/SimpleMath.h"
 using namespace DirectX::SimpleMath;
@@ -698,8 +699,16 @@ int main()
 		return GltfScene(gltf_init_data);
 	});
 
+	std::chrono::high_resolution_clock timer;
+	auto previous_time = timer.now();
+
 	while (!should_close)
 	{
+		auto current_time = timer.now();
+		using seconds = std::chrono::duration<float, std::ratio<1, 1>>;
+		float delta_time = std::chrono::duration_cast<seconds>(current_time - previous_time).count();
+		previous_time = current_time;
+
 		MICROPROFILE_SCOPEI("default", "main loop", MP_YELLOW);
 
 		RECT client_rect;
@@ -747,7 +756,7 @@ int main()
 		else if (IsKeyPressed(VK_LBUTTON))
 		{
 			// Camera rotation
-			const float speed = 0.0025f; //TODO: delta_time
+			const float speed = 0.0025f;
 			const Vector3 cam_right = Cross(cam_forward, cam_up);
 			const Quaternion quat_pitch = Quaternion::CreateFromAxisAngle(cam_right, -1.0f * speed * mouse_delta.y);
 			const Quaternion quat_yaw = Quaternion::CreateFromAxisAngle(cam_up, -1.0f * speed * mouse_delta.x);
@@ -761,7 +770,7 @@ int main()
 
 		// Basic Fly-Camera
 		{
-			float move_speed = 7.5f; //TODO: delta_time
+			float move_speed = 500.f * delta_time;
 			if (IsKeyPressed(VK_SHIFT)) { move_speed *= 10.0f; }
 
 			const Vector3 cam_right = Cross(cam_forward, cam_up);
@@ -846,7 +855,7 @@ int main()
 				},
 			};
 
-			// Static to prevent cleanup / recreation. TODO: pool these in some manager.
+			// Static psos to prevent cleanup / recreation.
 			static ComPtr<ID3D12PipelineState> visibility_pso = GraphicsPipelineBuilder()
 				.with_root_signature(global_root_signature)
 				.with_vs(CompileVertexShader(L"Shaders/Visibility.hlsl", L"VertexShader"))
@@ -950,7 +959,6 @@ int main()
 						command_list->SetGraphicsRoot32BitConstants(1, 2, constants, 0);
 						UINT instance_count = (UINT) octree_leaf_nodes.size();
 
-						//FCS TODO: Weird GPU Memory corruption if too many octree nodes. No idea why
 						command_list->DrawInstanced(uv_sphere.indices_count, instance_count, 0, 0);
 					}
 				},
@@ -985,7 +993,7 @@ int main()
 				{},
 				.execute = [&command_queue, &frame_data](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
 				{
-					HR_CHECK(command_list->Close()); //TODO: REMOVE
+					HR_CHECK(command_list->Close());
 
 					ID3D12CommandList* ppCommandLists[] = { command_list.Get() };
 					command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);

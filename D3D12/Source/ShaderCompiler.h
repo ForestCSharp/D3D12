@@ -11,7 +11,7 @@ using Microsoft::WRL::ComPtr;
 #include <vector>
 #include <d3d12.h>
 #include <d3d12shader.h>
-#include "../dxc/inc/dxcapi.h" //TODO: Fix this in other files...
+#include "../dxc/inc/dxcapi.h"
 #include "Common.h"
 
 using STL_IMPL::vector;
@@ -100,7 +100,7 @@ inline ShaderCompilerOutput CompileShader(const LPCWSTR in_file_path, const LPCW
 	if (pErrors && pErrors->GetStringLength() > 0)
 	{
 		printf("CompileShader Error: %s\n", (char*)pErrors->GetBufferPointer());
-		throw std::logic_error("Failed compile shader"); //TODO: Remove and disable exceptions
+		throw std::logic_error("Failed compile shader");
 	}
 
 	IDxcBlob* pBlob;
@@ -126,8 +126,6 @@ template <class T> ComPtr<T> GetReflection(const ShaderCompilerOutput& in_shader
 	context.utils->CreateReflection(&reflectionBuffer, IID_PPV_ARGS(pShaderReflection.GetAddressOf()));
 	return pShaderReflection;
 }
-
-//TODO: CompiledLibrary struct if we need reflection data...
 
 inline ComPtr<IDxcBlob> CompileShaderLibrary(const LPCWSTR in_file_path)
 {

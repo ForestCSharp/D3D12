@@ -76,9 +76,6 @@ struct IndirectDrawData
 
 	// Which instance in our instance buffer are we drawing
 	uint instance_id;
-	
-	// Bindless index to instance buffer
-	//uint instance_buffer_index; //FCS TODO:
 
 	// Our actual Indirect Draw Args
 	INDIRECT_DRAW_ARGS draw_arguments;

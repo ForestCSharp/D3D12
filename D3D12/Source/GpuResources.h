@@ -78,7 +78,7 @@ public:
 			Resize(data_size);
 		}
 
-		//TODO: check/assert that this buffer is cpu writeable...
+		assert(m_buffer_desc.heap_type == D3D12_HEAP_TYPE_UPLOAD);
 		assert(data_size <= GetSize());
 		UINT8* mapped_data = nullptr;
 		D3D12_RANGE read_range = { 0, 0 };
@@ -272,7 +272,7 @@ public:
 		return *constant_buffer.m_bindless_resource_index;
 	}
 
-	//TODO: UINT32 RegisterUAV(Buffer& buffer)
+	//FCS TODO: UINT32 RegisterUAV(Buffer& buffer)
 
 	UINT32 RegisterUAV(GpuTexture& texture)
 	{
@@ -318,7 +318,7 @@ public:
 		return *buffer.m_bindless_resource_index;
 	}
 
-	//TODO: RegisterSRV(Texture& texture, ...)
+	//FCS TODO: RegisterSRV(Texture& texture, ...)
 
 	UINT32 RegisterAccelerationStructure(GpuBuffer& acceleration_structure)
 	{

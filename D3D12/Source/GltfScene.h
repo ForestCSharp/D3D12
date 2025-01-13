@@ -259,15 +259,6 @@ struct GltfScene
 		// Process default scene
 		if (const cgltf_scene* scene = data->scene)
 		{
-			// Set up staging buffer
-			GpuBufferDesc staging_buffer_desc = {
-				.allocator = init_data.allocator,
-				.size = 1024,
-				.heap_type = D3D12_HEAP_TYPE_UPLOAD,
-				.resource_flags = D3D12_RESOURCE_FLAG_NONE,
-				.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
-			};
-
 			// Set up command allocator/list for staging buffer copies
 			ComPtr<ID3D12CommandAllocator> command_allocator;
 			HR_CHECK(init_data.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&command_allocator)));
