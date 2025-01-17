@@ -36,6 +36,13 @@ struct OctreeNode
 	SG sg;
 };
 
+//OctreeNode octree_node;
+//if (Octree_Search(global_constant_buffer.octree, input.world_position, octree_node))
+//{
+//	float3 result = SG_Evaluate(octree_node.sg, input.normal);
+//	//return float4(result, 1);
+//}
+
 #ifndef __cplusplus
 
 inline bool Octree_IsValidPosition(OctreeNode node, float3 position)

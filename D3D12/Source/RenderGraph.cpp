@@ -2,7 +2,7 @@
 
 void RenderGraphNode::Execute(struct RenderGraph& render_graph, ComPtr<ID3D12GraphicsCommandList4> in_command_list)
 {
-	unordered_map<string, RenderGraphNode>& nodes = render_graph.GetNodes();
+	HashMap<string, RenderGraphNode>& nodes = render_graph.GetNodes();
 	multimap<string, RenderGraphEdge>& incoming_edges = render_graph.GetIncomingEdges();
 	const string& node_name = desc.name;
 
@@ -33,6 +33,17 @@ void RenderGraphNode::Execute(struct RenderGraph& render_graph, ComPtr<ID3D12Gra
 	desc.execute(*this, in_command_list);
 }
 
+void RenderGraph::Cleanup()
+{
+	for (auto& [node_name, node] : nodes)
+	{
+		for (auto& [output_name, output] : node.outputs)
+		{
+			output.UnregisterBindlessResource();
+		}
+	}
+}
+
 void RenderGraph::AddNode(const RenderGraphNodeDesc&& in_desc)
 {
 	assert(in_desc.setup && in_desc.execute);
@@ -40,8 +51,8 @@ void RenderGraph::AddNode(const RenderGraphNodeDesc&& in_desc)
 	//Create actual node
 	RenderGraphNode new_node(in_desc);
 
-	//Immediately run setup
-	new_node.Setup(m_allocator.Get());
+	////Immediately run setup
+	new_node.Setup(m_allocator.Get(), bindless_resource_manager, frame_index);
 
 	//Insert
 	nodes.insert({ in_desc.name, new_node });
@@ -70,7 +81,7 @@ void RenderGraph::AddEdge(const RenderGraphEdge&& in_edge)
 	outgoing_edges.insert({in_edge.incoming_node, in_edge});
 }
 
-vector<RenderGraphNode*> RenderGraph::RecurseNodes(const vector<string>& in_node_names, unordered_map<string, size_t> visited_nodes)
+vector<RenderGraphNode*> RenderGraph::RecurseNodes(const vector<string>& in_node_names, HashMap<string, size_t>& visited_nodes)
 {
 	assert(in_node_names.size() > 0);
 
@@ -130,7 +141,7 @@ void RenderGraph::Execute()
 	}
 
 	// 2. Work backwards from terminal nodes to determine flow of execution (sort nodes)
-	unordered_map<string, size_t> visited_nodes;
+	HashMap<string, size_t> visited_nodes;
 	vector<RenderGraphNode*> sorted_nodes = RecurseNodes(terminal_node_names, visited_nodes);
 
 	// 3. Work backwards through sorted nodes + execute them

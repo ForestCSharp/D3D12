@@ -13,11 +13,16 @@ ConstantBuffer<DrawConstants> draw_constants : register(b1, space0);
 struct PsInput
 {
     float4 position : SV_POSITION;
-    float3 normal : NORMAL;
-    float3 color : COLOR;
-	float2 texcoord : TEXCOORD;
-	float3 world_position : TEXCOORD1;
+	nointerpolation uint instance_id: TEXCOORD0;
+	nointerpolation uint triangle_id: TEXCOORD1;
+
+	//float3 normal : NORMAL;
+	//float3 color : COLOR;
+	//float2 texcoord : TEXCOORD;
+	//float3 world_position : TEXCOORD1;
 };
+
+//FCS TODO: Just Output 
 
 PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
 {
@@ -31,26 +36,47 @@ PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_Instanc
 
     const float4x4 proj_view = mul(global_constant_buffer.projection, global_constant_buffer.view);
     const float4 world_position = mul(instance.transform, float4(vertex.position, 1));
-	const float4 world_normal = mul(instance.transform, float4(vertex.normal, 0));
+	const float4 world_normal = mul(instance.transform, float4(vertex.normal, 0)); //FCS TODO: just multiply this by rotation, not entire transform
     const float4 out_position = mul(proj_view, world_position);
 
     PsInput ps_input;
     ps_input.position = out_position;
-    ps_input.normal = world_normal.xyz;
-	ps_input.color = vertex.color;
-	ps_input.texcoord = vertex.texcoord;
-	ps_input.world_position = world_position.xyz;
+	ps_input.instance_id = draw_constants.instance_id;
+	ps_input.triangle_id = vertex_id / 3;
+
+ 	//ps_input.normal = world_normal.xyz;
+	//ps_input.color = vertex.color;
+	//ps_input.texcoord = vertex.texcoord;
+	//ps_input.world_position = world_position.xyz;
+
     return ps_input;
 }
 
+#define NUM_INSTANCE_COLORS 12
+
 float4 PixelShader(const PsInput input) : SV_TARGET
 {
-	OctreeNode octree_node;
-	if (Octree_Search(global_constant_buffer.octree, input.world_position, octree_node))
-	{
-		float3 result = SG_Evaluate(octree_node.sg, input.normal);
-		return float4(result, 1);
-	}
+	//float4 instance_colors[NUM_INSTANCE_COLORS] = 
+	//{
+	//	float4(1,0,0,1),
+	//	float4(0,1,0,1),
+	//	float4(0,0,1,1),
+	//	float4(1,1,0,1),
+	//	float4(1,0,1,1),
+	//	float4(0,1,1,1),
+	//	float4(0.5, 0, 0, 1),
+	//	float4(0, 0.5, 0, 1),
+	//	float4(0, 0, 0.5, 1),
+	//	float4(0.5, 0.5, 0, 1),
+	//	float4(0.5, 0, 0.5, 1),
+	//	float4(0, 0.5, 0.5, 1)
+	//};
 
-	return float4(0,0,0,0);
+	//float4 out_color = instance_colors[input.instance_id % NUM_INSTANCE_COLORS];
+	//float4 out_color = instance_colors[input.triangle_id % NUM_INSTANCE_COLORS];
+
+	float4 out_color = float4(0,0,0,1);
+	out_color.r = input.instance_id;
+	out_color.g = input.triangle_id;
+	return out_color;
 }

@@ -113,6 +113,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Source\D3D12MemAlloc\D3D12MemAlloc.cpp" />
+    <ClCompile Include="Source\GpuResources.cpp" />
     <ClCompile Include="Source\main.cpp" />
     <ClCompile Include="Source\microprofile\microprofile.cpp" />
     <ClCompile Include="Source\RenderGraph.cpp" />

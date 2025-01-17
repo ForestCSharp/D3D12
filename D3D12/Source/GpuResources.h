@@ -27,90 +27,40 @@ struct GpuBufferDesc
 	D3D12_RESOURCE_STATES resource_state = D3D12_RESOURCE_STATE_COMMON;
 };
 
+struct BindlessResourceManager;
+
+struct BindlessResourceData
+{
+	BindlessResourceManager* manager = nullptr;
+	optional<UINT64> frame_index;
+	UINT32 descriptor_index;
+};
+
 struct GpuBuffer
 {
 public:
-	GpuBuffer() {}
-	GpuBuffer(const GpuBufferDesc& in_desc)
-	{
-		m_buffer_desc = in_desc;
-		assert(m_buffer_desc.allocator);
-		assert(m_buffer_desc.size > 0);
-
-		m_resource_desc = {};
-		m_resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		m_resource_desc.Alignment = 0;
-		m_resource_desc.Width = m_buffer_desc.size;
-		m_resource_desc.Height = 1;
-		m_resource_desc.DepthOrArraySize = 1;
-		m_resource_desc.MipLevels = 1;
-		m_resource_desc.Format = DXGI_FORMAT_UNKNOWN;
-		m_resource_desc.SampleDesc.Count = 1;
-		m_resource_desc.SampleDesc.Quality = 0;
-		m_resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		m_resource_desc.Flags = m_buffer_desc.resource_flags;
-
-		// Actually allocate our buffer
-		Resize(m_buffer_desc.size);
-	};
+	GpuBuffer() = default;
+	GpuBuffer(const GpuBufferDesc& in_desc);
 
 	bool IsValid() { return m_resource != nullptr && m_resource_desc.Width > 0; }
 	ID3D12Resource* GetResource() const { return m_resource.Get(); }
 	size_t GetSize() const { return m_resource_desc.Width; }
 	DXGI_FORMAT GetFormat() const { return m_resource_desc.Format; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GetResource()->GetGPUVirtualAddress(); }
-	uint32_t GetBindlessResourceIndex() const
-	{
-		assert(m_bindless_resource_index.has_value());
-		return *m_bindless_resource_index;
-	}
 
-	void Map(void** ppData)
-	{
-		D3D12_RANGE read_range = { 0, 0 };
-		HR_CHECK(m_resource->Map(0, &read_range, ppData));
-	}
-
-	void Write(void* in_data, size_t data_size)
-	{
-		if (data_size > GetSize())
-		{
-			Resize(data_size);
-		}
-
-		assert(m_buffer_desc.heap_type == D3D12_HEAP_TYPE_UPLOAD);
-		assert(data_size <= GetSize());
-		UINT8* mapped_data = nullptr;
-		D3D12_RANGE read_range = { 0, 0 };
-		HR_CHECK(m_resource->Map(0, &read_range, reinterpret_cast<void**>(&mapped_data)));
-		memcpy(mapped_data, in_data, data_size);
-		m_resource->Unmap(0, nullptr);
-	}
-
-	void Resize(size_t new_size)
-	{
-		m_buffer_desc.size = new_size;
-		m_resource_desc.Width = new_size;
-
-		D3D12MA::ALLOCATION_DESC alloc_desc = {};
-		alloc_desc.HeapType = m_buffer_desc.heap_type;
-
-		HR_CHECK(m_buffer_desc.allocator->CreateResource(
-			&alloc_desc,
-			&m_resource_desc,
-			m_buffer_desc.resource_state,
-			nullptr,
-			&m_allocation,
-			IID_PPV_ARGS(&m_resource)
-		));
-	}
+	uint32_t GetBindlessResourceIndex() const;
+	void UnregisterBindlessResource();
+	void Map(void** ppData);
+	void Write(void* in_data, size_t data_size);
+	void Resize(size_t new_size);
 
 protected:
 	GpuBufferDesc m_buffer_desc = {};
 	D3D12_RESOURCE_DESC m_resource_desc = {};
 	ComPtr<ID3D12Resource> m_resource;
 	ComPtr<D3D12MA::Allocation> m_allocation;
-	optional<uint32_t> m_bindless_resource_index;
+
+	optional<BindlessResourceData> bindless_resource_data = std::nullopt;
 
 	friend struct BindlessResourceManager;
 };
@@ -129,57 +79,21 @@ struct GpuTextureDesc
 struct GpuTexture
 {
 public:
-	GpuTexture() {}
-
-	GpuTexture(const GpuTextureDesc& in_desc)
-	{
-		assert(in_desc.allocator);
-		assert(in_desc.width > 0);
-		assert(in_desc.height > 0);
-
-		D3D12MA::ALLOCATION_DESC alloc_desc = {};
-		alloc_desc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
-
-		m_resource_desc = {};
-		m_resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-		m_resource_desc.Alignment = 0;
-		m_resource_desc.Width = in_desc.width;
-		m_resource_desc.Height = in_desc.height;
-		m_resource_desc.DepthOrArraySize = 1;
-		m_resource_desc.MipLevels = 1;
-		m_resource_desc.Format = in_desc.format;
-		m_resource_desc.SampleDesc.Count = 1;
-		m_resource_desc.SampleDesc.Quality = 0;
-		m_resource_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		m_resource_desc.Flags = in_desc.resource_flags;
-
-		//if (m_resource_desc.Flags & )
-		D3D12_CLEAR_VALUE clear_value = {};
-		const bool has_clear_value = in_desc.optimized_clear_value.has_value();
-		if (has_clear_value)
-		{
-			clear_value = *in_desc.optimized_clear_value;
-		}
-
-		HR_CHECK(in_desc.allocator->CreateResource(
-			&alloc_desc,
-			&m_resource_desc,
-			in_desc.resource_state,
-			has_clear_value ? &clear_value : nullptr,
-			&m_allocation,
-			IID_PPV_ARGS(&m_resource)
-		));
-	}
+	GpuTexture() = default;
+	GpuTexture(const GpuTextureDesc& in_desc);
 
 	bool IsValid() { return m_resource != nullptr; }
 	ID3D12Resource* GetResource() const { return m_resource.Get(); }
 	DXGI_FORMAT GetFormat() const { return m_resource_desc.Format; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GetResource()->GetGPUVirtualAddress(); }
+	uint32_t GetBindlessResourceIndex() const;
+	void UnregisterBindlessResource();
 protected:
 	D3D12_RESOURCE_DESC m_resource_desc = {};
 	ComPtr<ID3D12Resource> m_resource;
 	ComPtr<D3D12MA::Allocation> m_allocation;
-	optional<uint32_t> m_bindless_resource_index;
+
+	optional<BindlessResourceData> bindless_resource_data = std::nullopt;
 
 	friend struct BindlessResourceManager;
 };
@@ -259,44 +173,149 @@ public:
 		m_descriptor_size = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	}
 
-	UINT32 RegisterCBV(GpuBuffer& constant_buffer)
+	void BeginFrame(UINT64 frame_idx)
 	{
+		frame_free_lists.insert({ frame_idx, {} });
+	}
+
+	void CleanupFrame(UINT64 frame_idx)
+	{
+		auto found_frame_free_list = frame_free_lists.find(frame_idx);
+		if (found_frame_free_list != frame_free_lists.end())
+		{
+			const FreeList& frame_free_list = found_frame_free_list->second;
+			default_free_list.insert(
+				default_free_list.end(), 
+				frame_free_list.begin(), 
+				frame_free_list.end()
+			);
+			frame_free_lists.erase(frame_idx);
+		}
+	}
+
+	optional<UINT32> GetFreeListEntry(optional<UINT64> frame_idx)
+	{
+		// If we have a frame_idx set, search there first
+		if (frame_idx.has_value())
+		{
+			auto found_frame_free_list = frame_free_lists.find(*frame_idx);
+			if (found_frame_free_list != frame_free_lists.end())
+			{
+				FreeList& frame_free_list = found_frame_free_list->second;
+				if (frame_free_list.size() > 0)
+				{
+					UINT32 out_index = frame_free_list.back();
+					frame_free_list.pop_back();
+					return out_index;
+				}
+			}
+		}
+		
+		// Then search the default free list
+		if (default_free_list.size() > 0)
+		{
+			UINT32 out_index = default_free_list.back();
+			default_free_list.pop_back();
+			return out_index;
+		}
+
+		// No free list entry found, we'll have to increment m_num_descriptors_allocated in AllocateDescriptor
+		return std::nullopt;
+	}
+
+	void ReturnFreeListEntry(UINT32 descriptor_index, optional<UINT64> frame_idx)
+	{
+		if (frame_idx.has_value())
+		{
+			auto found_frame_free_list = frame_free_lists.find(*frame_idx);
+			if (found_frame_free_list != frame_free_lists.end())
+			{
+				FreeList& frame_free_list = found_frame_free_list->second;
+				frame_free_list.push_back(descriptor_index);
+			}
+		}
+		else
+		{
+			default_free_list.push_back(descriptor_index);
+		}
+	}
+
+	/*	
+		All Register Functions can optionally take a frame_idx. 
+		This should be used for resources that are intended to only exist for a single frame.
+		For resources not bound to a specific frame, that argument can be omitted
+	*/
+
+	UINT32 RegisterCBV(GpuBuffer& in_buffer, optional<UINT64> frame_idx = std::nullopt)
+	{
+		assert(!in_buffer.bindless_resource_data.has_value());
+
 		D3D12_CPU_DESCRIPTOR_HANDLE cbuffer_cpu_handle;
-		constant_buffer.m_bindless_resource_index = AllocateDescriptor(&cbuffer_cpu_handle);
+		in_buffer.bindless_resource_data = BindlessResourceData {
+			.manager = this,
+			.frame_index = frame_idx,
+			.descriptor_index = AllocateDescriptor(&cbuffer_cpu_handle, frame_idx),
+		};
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc =
 		{
-			.BufferLocation = constant_buffer.GetGPUVirtualAddress(),
-			.SizeInBytes = static_cast<UINT>(constant_buffer.GetSize()),
+			.BufferLocation = in_buffer.GetGPUVirtualAddress(),
+			.SizeInBytes = static_cast<UINT>(in_buffer.GetSize()),
 		};
 		m_device->CreateConstantBufferView(&cbv_desc, cbuffer_cpu_handle);
-		return *constant_buffer.m_bindless_resource_index;
+		return in_buffer.bindless_resource_data->descriptor_index;
 	}
 
-	//FCS TODO: UINT32 RegisterUAV(Buffer& buffer)
-
-	UINT32 RegisterUAV(GpuTexture& texture)
+	UINT32 RegisterUAV(GpuBuffer& in_buffer, optional<UINT64> frame_idx = std::nullopt)
 	{
+		assert(!in_buffer.bindless_resource_data.has_value());
+
 		D3D12_CPU_DESCRIPTOR_HANDLE uav_cpu_handle;
-		texture.m_bindless_resource_index = AllocateDescriptor(&uav_cpu_handle);
-		D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
-		UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-		m_device->CreateUnorderedAccessView(texture.GetResource(), nullptr, &UAVDesc, uav_cpu_handle);
-		return *texture.m_bindless_resource_index;
+		in_buffer.bindless_resource_data = BindlessResourceData {
+			.manager = this,
+			.frame_index = frame_idx,
+			.descriptor_index = AllocateDescriptor(&uav_cpu_handle, frame_idx),
+		};		
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+		uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		m_device->CreateUnorderedAccessView(in_buffer.GetResource(), nullptr, &uav_desc, uav_cpu_handle);
+		return in_buffer.bindless_resource_data->descriptor_index;
 	}
 
-	UINT32 RegisterSRV(GpuBuffer& buffer, UINT32 num_elements, UINT32 element_size)
+	UINT32 RegisterUAV(GpuTexture& in_texture, optional<UINT64> frame_idx = std::nullopt)
 	{
+		assert(!in_texture.bindless_resource_data.has_value());
+
+		D3D12_CPU_DESCRIPTOR_HANDLE uav_cpu_handle;
+		in_texture.bindless_resource_data = BindlessResourceData {
+			.manager = this,
+			.frame_index = frame_idx,
+			.descriptor_index = AllocateDescriptor(&uav_cpu_handle, frame_idx),
+		};
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+		uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+		m_device->CreateUnorderedAccessView(in_texture.GetResource(), nullptr, &uav_desc, uav_cpu_handle);
+		return in_texture.bindless_resource_data->descriptor_index;
+	}
+
+	UINT32 RegisterSRV(GpuBuffer& in_buffer, UINT32 num_elements, UINT32 element_size, optional<UINT64> frame_idx = std::nullopt)
+	{
+		assert(!in_buffer.bindless_resource_data.has_value());
+
 		D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_handle;
-		buffer.m_bindless_resource_index = AllocateDescriptor(&srv_cpu_handle);
-		D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
-		SRVDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-		SRVDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		in_buffer.bindless_resource_data = BindlessResourceData {
+			.manager = this,
+			.frame_index = frame_idx,
+			.descriptor_index = AllocateDescriptor(&srv_cpu_handle, frame_idx),
+		};	
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+		srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
 		if (element_size == 0)
 		{
-			SRVDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-			SRVDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-			SRVDesc.Buffer =
+			srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+			srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+			srv_desc.Buffer =
 			{
 				.FirstElement = 0,
 				.NumElements = num_elements,
@@ -305,67 +324,103 @@ public:
 		}
 		else
 		{
-			SRVDesc.Format = DXGI_FORMAT_UNKNOWN;
-			SRVDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-			SRVDesc.Buffer =
+			srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+			srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+			srv_desc.Buffer =
 			{
 				.FirstElement = 0,
 				.NumElements = num_elements,
 				.StructureByteStride = element_size,
 			};
 		}
-		m_device->CreateShaderResourceView(buffer.GetResource(), &SRVDesc, srv_cpu_handle);
-		return *buffer.m_bindless_resource_index;
+		m_device->CreateShaderResourceView(in_buffer.GetResource(), &srv_desc, srv_cpu_handle);
+		return in_buffer.bindless_resource_data->descriptor_index;
 	}
 
-	//FCS TODO: RegisterSRV(Texture& texture, ...)
-
-	UINT32 RegisterAccelerationStructure(GpuBuffer& acceleration_structure)
+	UINT32 RegisterSRV(GpuTexture& in_texture, optional<UINT64> frame_idx = std::nullopt)
 	{
-		D3D12_CPU_DESCRIPTOR_HANDLE accel_structure_cpu_handle;
-		acceleration_structure.m_bindless_resource_index = AllocateDescriptor(&accel_structure_cpu_handle);
-		D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc =
+		assert(!in_texture.bindless_resource_data.has_value());
+
+		D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_handle;
+		in_texture.bindless_resource_data = BindlessResourceData {
+			.manager = this,
+			.frame_index = frame_idx,
+			.descriptor_index = AllocateDescriptor(&srv_cpu_handle, frame_idx),
+		};
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc =
+		{
+			.Format = DXGI_FORMAT_UNKNOWN,
+			.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
+			.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+			.Texture2D = 
+			{
+				.MostDetailedMip = 0,
+				.MipLevels = 1,
+				.PlaneSlice = 0,
+				.ResourceMinLODClamp = 0,
+			}
+		};
+		m_device->CreateShaderResourceView(nullptr, &srv_desc, srv_cpu_handle);
+		return in_texture.bindless_resource_data->descriptor_index;
+	}
+
+	UINT32 RegisterAccelerationStructure(GpuBuffer& in_buffer, optional<UINT64> frame_idx = std::nullopt)
+	{
+		assert(!in_buffer.bindless_resource_data.has_value());
+
+		D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_handle;
+		in_buffer.bindless_resource_data = BindlessResourceData {
+			.manager = this,
+			.frame_index = frame_idx,
+			.descriptor_index = AllocateDescriptor(&srv_cpu_handle, frame_idx),
+		};	
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc =
 		{
 			.Format = DXGI_FORMAT_UNKNOWN,
 			.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
 			.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
 			.RaytracingAccelerationStructure =
 			{
-				.Location = acceleration_structure.GetGPUVirtualAddress(),
+				.Location = in_buffer.GetGPUVirtualAddress(),
 			}
 		};
-		m_device->CreateShaderResourceView(nullptr, &SRVDesc, accel_structure_cpu_handle);
-		return *acceleration_structure.m_bindless_resource_index;
+		m_device->CreateShaderResourceView(nullptr, &srv_desc, srv_cpu_handle);
+		return in_buffer.bindless_resource_data->descriptor_index;
 	}
 
 	void UnregisterResource(GpuBuffer& buffer)
 	{
 		std::lock_guard scope_lock(m_mutex);
-		assert(buffer.m_bindless_resource_index.has_value());
-		m_free_list.push_back(*buffer.m_bindless_resource_index);
-		buffer.m_bindless_resource_index.reset();
+		assert(buffer.bindless_resource_data.has_value());
+		const UINT32 descriptor_index = buffer.bindless_resource_data->descriptor_index;
+		const optional<UINT64> frame_index = buffer.bindless_resource_data->frame_index;
+		ReturnFreeListEntry(descriptor_index, frame_index);
+		buffer.bindless_resource_data.reset();
 	}
 
 	void UnregisterResource(GpuTexture& texture)
 	{
 		std::lock_guard scope_lock(m_mutex);
-		assert(texture.m_bindless_resource_index.has_value());
-		m_free_list.push_back(*texture.m_bindless_resource_index);
-		texture.m_bindless_resource_index.reset();
+		assert(texture.bindless_resource_data.has_value());
+		const UINT32 descriptor_index = texture.bindless_resource_data->descriptor_index;
+		const optional<UINT64> frame_index = texture.bindless_resource_data->frame_index;
+		ReturnFreeListEntry(descriptor_index, frame_index);
+		texture.bindless_resource_data.reset();
 	}
 
 	ComPtr<ID3D12DescriptorHeap> GetDescriptorHeap() { return m_descriptor_heap; }
 	D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle() { return m_descriptor_heap->GetGPUDescriptorHandleForHeapStart(); }
 
 protected:
-	UINT AllocateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* cpu_descriptor)
+	UINT AllocateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* cpu_descriptor, optional<UINT64> frame_idx = std::nullopt)
 	{
 		std::lock_guard scope_lock(m_mutex);
 		UINT descriptor_index_to_use = UINT_MAX;
-		if (m_free_list.size() > 0)
+		bool from_free_list = false;
+		if (optional<UINT32> free_list_entry = GetFreeListEntry(frame_idx))
 		{
-			descriptor_index_to_use = m_free_list.back();
-			m_free_list.pop_back();
+			descriptor_index_to_use = *free_list_entry;
+			from_free_list = true;
 		}
 		else
 		{
@@ -373,9 +428,12 @@ protected:
 		}
 		assert(descriptor_index_to_use < NUM_BINDLESS_DESCRIPTORS_PER_TYPE);
 
+		printf("Allocation Descriptor: %u, m_num_descriptors_allocated: %u\n", descriptor_index_to_use, m_num_descriptors_allocated);
+
 		D3D12_CPU_DESCRIPTOR_HANDLE descriptor_handle = m_descriptor_heap->GetCPUDescriptorHandleForHeapStart();
 		INT64 cpu_descriptor_heap_offset = INT64(descriptor_index_to_use) * INT64(m_descriptor_size);
 		descriptor_handle.ptr += cpu_descriptor_heap_offset;
+
 		*cpu_descriptor = descriptor_handle;
 		return descriptor_index_to_use;
 	};
@@ -384,6 +442,13 @@ protected:
 	ComPtr<ID3D12DescriptorHeap> m_descriptor_heap;
 	UINT m_descriptor_size = 0;
 	UINT m_num_descriptors_allocated = 0;
-	vector<UINT32> m_free_list;
 	std::mutex m_mutex;
+
+	using FreeList = vector<UINT32>;
+	HashMap<UINT64, FreeList> frame_free_lists;
+	FreeList default_free_list;
 };
+
+//FCS TODO: Support for using BindlessResourceManager during rendering
+//FCS TODO: BindlessResourceManager needs to persist bindless bindings until they aren't needed any more
+//FCS TODO: Need to Create array of free-lists tagged by their allocation frame

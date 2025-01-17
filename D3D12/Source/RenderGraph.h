@@ -8,9 +8,8 @@
 #include <string>
 #include <optional>
 #include <functional>
+#include <utility>
 #include <variant>
-
-#include <unordered_map>
 
 using std::optional;
 using std::string;
@@ -18,8 +17,8 @@ using std::function;
 using std::variant;
 using std::get_if;
 using std::vector;
-using std::unordered_map;
 using std::multimap;
+using std::move;
 
 #include <d3d12.h>
 #include <wrl.h>
@@ -38,6 +37,7 @@ struct RenderGraphBufferDesc
 	D3D12_HEAP_TYPE heap_type = D3D12_HEAP_TYPE_DEFAULT;
 	D3D12_RESOURCE_FLAGS resource_flags = D3D12_RESOURCE_FLAG_NONE;
 	D3D12_RESOURCE_STATES resource_state = D3D12_RESOURCE_STATE_COMMON;
+	bool bindless = false;
 };
 
 struct RenderGraphBuffer
@@ -47,7 +47,7 @@ struct RenderGraphBuffer
 		: desc(in_desc)
 	{}
 
-	void CreateResource(D3D12MA::Allocator* in_allocator)
+	void CreateResource(D3D12MA::Allocator* in_allocator, BindlessResourceManager* in_bindless_manager, UINT64 frame_index)
 	{
 		buffer = GpuBuffer(GpuBufferDesc
 		{
@@ -57,6 +57,11 @@ struct RenderGraphBuffer
 			.resource_flags = desc.resource_flags,
 			.resource_state = desc.resource_state,
 		});
+
+		if (desc.bindless)
+		{
+			in_bindless_manager->RegisterUAV(*buffer, frame_index);
+		}
 	}
 
 	RenderGraphBufferDesc desc;
@@ -71,6 +76,7 @@ struct RenderGraphTextureDesc
 	D3D12_RESOURCE_FLAGS resource_flags = D3D12_RESOURCE_FLAG_NONE;
 	D3D12_RESOURCE_STATES resource_state = D3D12_RESOURCE_STATE_COMMON;
 	optional<D3D12_CLEAR_VALUE> optimized_clear_value = std::nullopt;
+	bool bindless = false;
 };
 
 struct RenderGraphTexture
@@ -80,7 +86,7 @@ struct RenderGraphTexture
 		: desc(desc)
 	{}
 
-	void CreateResource(D3D12MA::Allocator* in_allocator)
+	void CreateResource(D3D12MA::Allocator* in_allocator, BindlessResourceManager* in_bindless_manager, UINT64 frame_index)
 	{
 		texture = GpuTexture(GpuTextureDesc
 		{
@@ -92,6 +98,11 @@ struct RenderGraphTexture
 			.resource_state = desc.resource_state,
 			.optimized_clear_value = desc.optimized_clear_value,
 		});
+
+		if (desc.bindless)
+		{
+			in_bindless_manager->RegisterUAV(*texture, frame_index);
+		}
 	};
 
 	RenderGraphTextureDesc desc;
@@ -108,15 +119,15 @@ struct RenderGraphOutput
 		: resource(RenderGraphTexture(texture_desc))
 	{}
 
-	void CreateResource(D3D12MA::Allocator* in_allocator)
+	void CreateResource(D3D12MA::Allocator* in_allocator, BindlessResourceManager* in_bindless_manager, UINT64 frame_index)
 	{
 		if (RenderGraphBuffer* buffer = get_if<RenderGraphBuffer>(&resource))
 		{
-			buffer->CreateResource(in_allocator);
+			buffer->CreateResource(in_allocator, in_bindless_manager, frame_index);
 		}
 		else if (RenderGraphTexture* texture = get_if<RenderGraphTexture>(&resource))
 		{
-			texture->CreateResource(in_allocator);
+			texture->CreateResource(in_allocator, in_bindless_manager, frame_index);
 		}
 	}
 
@@ -133,6 +144,42 @@ struct RenderGraphOutput
 		
 		assert(false);
 		return nullptr;
+	}
+
+	UINT32 GetBindlessResourceIndex()
+	{
+
+		if (RenderGraphBuffer* buffer = get_if<RenderGraphBuffer>(&resource))
+		{
+			assert(buffer->desc.bindless);
+			return buffer->buffer->GetBindlessResourceIndex();
+		}
+		else if (RenderGraphTexture* texture = get_if<RenderGraphTexture>(&resource))
+		{
+			assert(texture->desc.bindless);
+			return texture->texture->GetBindlessResourceIndex();
+		}
+		
+		assert(false);
+		return 0;
+	}
+
+	void UnregisterBindlessResource()
+	{
+		if (RenderGraphBuffer* buffer = get_if<RenderGraphBuffer>(&resource))
+		{
+			if (buffer->desc.bindless && buffer->buffer.has_value())
+			{
+				buffer->buffer->UnregisterBindlessResource();
+			}			
+		}
+		else if (RenderGraphTexture* texture = get_if<RenderGraphTexture>(&resource))
+		{
+			if (texture->desc.bindless && texture->texture.has_value())
+			{
+				texture->texture->UnregisterBindlessResource();
+			}
+		}
 	}
 
 	D3D12_RESOURCE_STATES GetResourceState()
@@ -264,6 +311,19 @@ struct RenderGraphInput
 		return incoming_resource ? incoming_resource->GetD3D12Resource() : nullptr;
 	}
 
+	UINT32 GetBindlessResourceIndex()
+	{
+		return incoming_resource->GetBindlessResourceIndex();
+	}
+
+	void UnregisterBindlessResource()
+	{
+		if (incoming_resource)
+		{
+			incoming_resource->UnregisterBindlessResource();
+		}
+	}
+
 	D3D12_RESOURCE_STATES GetResourceState()
 	{
 		return	std::holds_alternative<RenderGraphBufferDesc>(desc)
@@ -279,8 +339,6 @@ struct RenderGraphNodeDesc
 {
 	// Node Name
 	string name;
-
-	// Compile fn (lambda) //Necessary? (b/w setup and render)
 	function<void(struct RenderGraphNode& self)> setup;
 	function<void(struct RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4>)> execute;
 };
@@ -324,14 +382,14 @@ private: //Called by friend struct RenderGraph
 		: desc(desc)
 	{}
 
-	void Setup(D3D12MA::Allocator* in_allocator)
+	void Setup(D3D12MA::Allocator* in_allocator, BindlessResourceManager* in_bindless_resource_manager, UINT64 frame_index)
 	{
 		desc.setup(*this);
 		
 		// Create output resources
 		for (auto& output : outputs)
 		{
-			output.second.CreateResource(in_allocator);
+			output.second.CreateResource(in_allocator, in_bindless_resource_manager, frame_index);
 		}
 	}
 
@@ -339,8 +397,8 @@ private: //Called by friend struct RenderGraph
 	
 private:
 	RenderGraphNodeDesc desc;
-	unordered_map<string, RenderGraphInput> inputs;
-	unordered_map<string, RenderGraphOutput> outputs;
+	HashMap<string, RenderGraphInput> inputs;
+	HashMap<string, RenderGraphOutput> outputs;
 
 	friend struct RenderGraph;
 };
@@ -358,6 +416,8 @@ struct RenderGraphDesc
 	ComPtr<ID3D12Device5> device;
 	ComPtr<D3D12MA::Allocator> allocator;
 	ComPtr<ID3D12GraphicsCommandList4> command_list;
+	BindlessResourceManager* bindless_resource_manager = nullptr;
+	UINT64 frame_index;
 };
 
 struct RenderGraph
@@ -366,24 +426,28 @@ struct RenderGraph
 		: m_device(create_info.device)
 		, m_allocator(create_info.allocator)
 		, m_command_list(create_info.command_list)
+		, bindless_resource_manager(create_info.bindless_resource_manager)
+		, frame_index(create_info.frame_index)
 	{}
+
+	void Cleanup();
 
 	void AddNode(const RenderGraphNodeDesc&& in_desc);
 
 	void AddEdge(const RenderGraphEdge&& in_edge);
 
 	// Works backwards (using edges) to determine graph connectivity to node_names
-	vector<RenderGraphNode*> RecurseNodes(const vector<string>& in_node_names, unordered_map<string, size_t> visited_nodes);
+	vector<RenderGraphNode*> RecurseNodes(const vector<string>& in_node_names, HashMap<string, size_t>& visited_nodes);
 
 	void Execute();
 
-	inline unordered_map<string, RenderGraphNode>& GetNodes() { return nodes; }
+	inline HashMap<string, RenderGraphNode>& GetNodes() { return nodes; }
 
 	inline multimap<string, RenderGraphEdge>& GetIncomingEdges() { return incoming_edges; }
 
 private:
 	// Nodes, keyed by node name
-	unordered_map<string, RenderGraphNode> nodes;
+	HashMap<string, RenderGraphNode> nodes;
 
 	// Key is the "outgoing" node of the edge, so this map represents edges incoming to a given node
 	multimap<string, RenderGraphEdge> incoming_edges;
@@ -396,4 +460,6 @@ private:
 	ComPtr<ID3D12Device5> m_device;
 	ComPtr<D3D12MA::Allocator> m_allocator;
 	ComPtr<ID3D12GraphicsCommandList4> m_command_list;
+	BindlessResourceManager* bindless_resource_manager;
+	UINT64 frame_index;
 };

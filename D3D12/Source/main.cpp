@@ -20,10 +20,6 @@
 #include "SimpleMath/SimpleMath.h"
 using namespace DirectX::SimpleMath;
 
-#include "Ankerl/unordered_dense.h"
-template<typename Key, typename Value>
-using HashMap = ankerl::unordered_dense::map<Key, Value>;
-
 #include <vector>
 #include <string>
 
@@ -168,7 +164,8 @@ struct FrameDataDesc
 struct FrameData
 {
 	// Resources
-	DXGI_FORMAT swap_chain_format;
+	DXGI_FORMAT swap_chain_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
 	ComPtr<ID3D12Resource> render_targets[frame_count];
 	ComPtr<IDXGISwapChain3> swapchain;
 	ComPtr<ID3D12CommandAllocator> command_allocators[frame_count];
@@ -177,9 +174,16 @@ struct FrameData
 	UINT current_backbuffer_index = 0;
 	HANDLE fence_event;
 	ComPtr<ID3D12Fence> fence;
+
 	UINT64 fence_values[frame_count];
 
+	BindlessResourceManager bindless_resource_manager;
+
+	// Need to keep render graphs around until their frame is done presenting
+	HashMap<UINT64, vector<RenderGraph>> pending_render_graphs;
+
 	FrameData(const FrameDataDesc& create_info)
+	: bindless_resource_manager(create_info.device)
 	{
 		resize(create_info);
 
@@ -206,8 +210,6 @@ struct FrameData
 		{
 			render_targets[i].Reset();
 		}
-
-		swap_chain_format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 		DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
 		swap_chain_desc.BufferCount = frame_count;
@@ -252,7 +254,7 @@ struct FrameData
 					HR_CHECK(swapchain->GetBuffer(i, IID_PPV_ARGS(&render_targets[i])));
 
 					D3D12_RENDER_TARGET_VIEW_DESC render_target_view_desc = {};
-					render_target_view_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+					render_target_view_desc.Format = swap_chain_format;
 					render_target_view_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 
 					create_info.device->CreateRenderTargetView(render_targets[i].Get(), &render_target_view_desc, rtv_descriptor_handle);
@@ -290,33 +292,62 @@ struct FrameData
 		HR_CHECK(swapchain->Present(1, 0));
 	}
 
-	HashMap<UINT64, vector<RenderGraph>> pending_render_graphs;
-	void register_graph(RenderGraph&& in_resource)
+	UINT64 get_current_frame_idx() const
 	{
-		pending_render_graphs[fence_values[current_backbuffer_index]].push_back(move(in_resource));
+		return fence_values[current_backbuffer_index];
+	}
+
+	void set_current_frame_idx(UINT64 in_new_frame_index)
+	{
+		fence_values[current_backbuffer_index] = in_new_frame_index;
+	}
+
+	void begin_frame()
+	{
+		bindless_resource_manager.BeginFrame(get_current_frame_idx());
+	}
+
+	void register_graph(RenderGraph&& in_render_graph)
+	{
+		in_render_graph.Execute();
+		pending_render_graphs[get_current_frame_idx()].push_back(move(in_render_graph));
 	}
 
 	void wait_for_previous_frame(ComPtr<ID3D12CommandQueue> command_queue)
 	{
 		// Signal The current fence value
-		const UINT64 current_fence_value = fence_values[current_backbuffer_index];
-		HR_CHECK(command_queue->Signal(fence.Get(), current_fence_value));
+		const UINT64 old_frame_index = get_current_frame_idx();
+		HR_CHECK(command_queue->Signal(fence.Get(), old_frame_index));
 
 		// Update Current Backbuffer Index
 		current_backbuffer_index = swapchain->GetCurrentBackBufferIndex();
+
+		// Current Frame Index is the fence value at our new current_backbuffer_index
+		UINT64 current_frame_index = get_current_frame_idx();
 		
 		// Check the fence's current completed value. If it is less than the value at our new current_back_buffer_index, we need to wait
-		if (fence->GetCompletedValue() < fence_values[current_backbuffer_index])
+		if (fence->GetCompletedValue() < current_frame_index)
 		{
-			HR_CHECK(fence->SetEventOnCompletion(fence_values[current_backbuffer_index], fence_event));
+			HR_CHECK(fence->SetEventOnCompletion(current_frame_index, fence_event));
 			WaitForSingleObjectEx(fence_event, INFINITE, FALSE);
 		}
 
-		// Clean up any resources associated with that fence_value
-		pending_render_graphs.erase(fence_values[current_backbuffer_index]);
+		// Cleanup any resources on the render graph
+		auto found_render_graph = pending_render_graphs.find(current_frame_index);
+		if (found_render_graph != pending_render_graphs.end())
+		{
+			for (RenderGraph& render_graph : found_render_graph->second)
+			{
+				render_graph.Cleanup();
+				pending_render_graphs.erase(current_frame_index);
+			}
+		}
 
-		// Update our fence value for next usage
-		fence_values[current_backbuffer_index] = current_fence_value + 1;
+		// Clean up any bindless resources for that frame
+		bindless_resource_manager.CleanupFrame(current_frame_index);
+
+		// Update our current frame index
+		set_current_frame_idx(old_frame_index + 1);
 	}
 };
 
@@ -462,13 +493,12 @@ int main()
 		.window = window,
 	};
 	FrameData frame_data(frame_data_create_info);
+	BindlessResourceManager& bindless_resource_manager = frame_data.bindless_resource_manager;
 
 	// 12. Create Command list using command allocator and pipeline state, and close it (we'll record it later)
 	ComPtr<ID3D12GraphicsCommandList4> command_list;
 	HR_CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frame_data.get_command_allocator(), nullptr, IID_PPV_ARGS(&command_list)));
 	HR_CHECK(command_list->Close());
-
-	BindlessResourceManager bindless_resource_manager(device);
 
 	//FCS TODO: BEGIN TESTING SGs
 
@@ -603,19 +633,20 @@ int main()
 				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
 			};
 
-			D3D12_ROOT_PARAMETER instance_index_root_param =
+			// Reserve Space for 4 32 bit constants that passes can use as they see fit
+			D3D12_ROOT_PARAMETER constants_root_param =
 			{
 				.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
 				.Constants =
 				{
 					.ShaderRegister = 1,
 					.RegisterSpace = 0,
-					.Num32BitValues = 2,
+					.Num32BitValues = 4,
 				},
 				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
 			};
 
-			D3D12_ROOT_PARAMETER root_params[] = { scene_cbv_root_param, instance_index_root_param };
+			D3D12_ROOT_PARAMETER root_params[] = { scene_cbv_root_param, constants_root_param };
 
 			D3D12_ROOT_SIGNATURE_DESC root_signature_desc =
 			{
@@ -673,7 +704,6 @@ int main()
 
 	// Load GLTF Scene
 	TaskResult<GltfScene> gltf_task_result = thread_pool.PostTask([&]() {
-
 		const char* gltf_files[3] = {
 			"Assets/FlyingWorld/scene.gltf",
 			"Assets/Sponza/Sponza.gltf",
@@ -701,9 +731,10 @@ int main()
 
 	std::chrono::high_resolution_clock timer;
 	auto previous_time = timer.now();
-
 	while (!should_close)
 	{
+		frame_data.begin_frame();
+
 		auto current_time = timer.now();
 		using seconds = std::chrono::duration<float, std::ratio<1, 1>>;
 		float delta_time = std::chrono::duration_cast<seconds>(current_time - previous_time).count();
@@ -829,18 +860,21 @@ int main()
 			HR_CHECK(frame_data.get_command_allocator()->Reset());
 			HR_CHECK(command_list->Reset(frame_data.get_command_allocator(), nullptr));
 
-			// Render Graph Testing
+			// Construct render graph for this frame
 			RenderGraph render_graph(RenderGraphDesc
 			{
 				.device = device,
 				.allocator = gpu_memory_allocator,
 				.command_list = command_list,
+				.bindless_resource_manager = &bindless_resource_manager,
+				.frame_index = frame_data.fence_values[frame_data.current_backbuffer_index],
 			});
 
-			const DXGI_FORMAT color_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			const DXGI_FORMAT swap_chain_format = frame_data.swap_chain_format;
+
 			const D3D12_CLEAR_VALUE clear_color =
 			{
-				.Format = color_format,
+				.Format = swap_chain_format,
 				.Color = { 0.39f, 0.58f, 0.93f, 1.0f },
 			};
 
@@ -863,9 +897,15 @@ int main()
 				.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
 				.with_depth_enabled(true)
 				.with_dsv_format(depth_format)
-				.with_rtv_formats({ color_format })
+				.with_rtv_formats({ swap_chain_format })
 				.with_debug_name(L"visibility_pso")
-			.build(device);
+				.build(device);
+
+			static ComPtr<ID3D12PipelineState> visibility_debug_pso = ComputePipelineBuilder()
+				.with_root_signature(global_root_signature)
+				.with_cs(CompileComputeShader(L"Shaders/Visibility_Debug.hlsl", L"CSMain"))
+				.with_debug_name(L"visibility_debug_pso")
+				.build(device);
 
 			static ComPtr<ID3D12PipelineState> octree_debug_view_pso = GraphicsPipelineBuilder()
 				.with_root_signature(global_root_signature)
@@ -874,11 +914,22 @@ int main()
 				.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
 				.with_depth_enabled(true)
 				.with_dsv_format(depth_format)
-				.with_rtv_formats({ color_format })
+				.with_rtv_formats({ swap_chain_format })
 				.with_debug_name(L"octree_debug_view_pso")
-			.build(device);
+				.build(device);
+			
+			// TODO:
+			// 1. Real Visibility Node
+			// Output: Single Render Target of Format R32G32_UINT
+			// Output: Depth?
 
-			//Add some nodes
+			//TODO: Propagate any UAV / Bindless Requirements back through render graph node DAG so you don't have to explicit mark resources?
+
+			// 2. Node to convert visbuffer to color output for debugging
+
+			const DXGI_FORMAT visbuffer_format = DXGI_FORMAT_R32G32_UINT;
+
+			// Add some nodes
 			render_graph.AddNode(RenderGraphNodeDesc
 			{
 				.name = "visibility",
@@ -888,10 +939,11 @@ int main()
 					{
 						.width = render_width,
 						.height = render_height,
-						.format = color_format,
-						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						.format = swap_chain_format,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
 						.optimized_clear_value = clear_color,
+						.bindless = true,
 					});
 
 					self.AddTextureOutput("depth", RenderGraphTextureDesc
@@ -935,8 +987,8 @@ int main()
 					{
 						.left = 0,
 						.top = 0,
-						.right = (LONG) render_width,
-						.bottom = (LONG) render_height,
+						.right = static_cast<long>(render_width),
+						.bottom = static_cast<long>(render_height),
 					};
 					command_list->RSSetScissorRects(1, &scissor);
 
@@ -944,23 +996,73 @@ int main()
 					{
 						command_list->SetPipelineState(visibility_pso.Get());
 						UINT instance_count = (UINT) gltf_scene->instances_array.size();
-						command_list->ExecuteIndirect(indirect_command_signature.Get(), instance_count, gltf_scene->indirect_draw_gpu_buffer.GetResource(), 0, nullptr, 0);
+						command_list->ExecuteIndirect(
+							indirect_command_signature.Get(), 
+							instance_count, 
+							gltf_scene->indirect_draw_gpu_buffer.GetResource(), 
+							0, 
+							nullptr, 
+							0
+						);
 					}
 
 					//Octree Debug View
 					if (enable_octree_debug_view)
 					{
 						command_list->SetPipelineState(octree_debug_view_pso.Get());
-						uint32_t constants[2] =
+						uint32_t constants[1] =
 						{
 							uv_sphere_instance_buffer.GetBindlessResourceIndex(), 	// instance_buffer_index
-							0,														// instance_id
 						};
-						command_list->SetGraphicsRoot32BitConstants(1, 2, constants, 0);
+						command_list->SetGraphicsRoot32BitConstants(1, 1, constants, 0);
 						UINT instance_count = (UINT) octree_leaf_nodes.size();
 
 						command_list->DrawInstanced(uv_sphere.indices_count, instance_count, 0, 0);
 					}
+				},
+			});
+
+			render_graph.AddNode(RenderGraphNodeDesc
+			{
+				.name = "visbuffer_debug",
+				.setup = [&](RenderGraphNode& self)
+				{
+					self.AddTextureInput("input", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = swap_chain_format,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+						.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
+						.bindless = true,
+					});
+
+					self.AddTextureOutput("output", RenderGraphTextureDesc
+					{
+						.width = render_width,
+						.height = render_height,
+						.format = swap_chain_format,
+						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+						.resource_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+						.bindless = true,
+					});
+				},
+				.execute = [&](RenderGraphNode& self, ComPtr<ID3D12GraphicsCommandList4> command_list)
+				{
+					RenderGraphInput& input = self.GetInput("input");
+					RenderGraphOutput& output = self.GetOutput("output");
+
+					command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
+					command_list->SetComputeRootConstantBufferView(0, global_constant_buffers[frame_data.current_backbuffer_index].GetGPUVirtualAddress());
+					command_list->SetComputeRootSignature(global_root_signature.Get());
+					uint32_t constants[2] =
+					{
+						input.GetBindlessResourceIndex(),
+						output.GetBindlessResourceIndex(),
+					};
+					command_list->SetPipelineState(visibility_debug_pso.Get());
+					command_list->SetComputeRoot32BitConstants(1, 2, constants, 0);
+					command_list->Dispatch(render_width, render_height, 1);
 				},
 			});
 
@@ -973,7 +1075,7 @@ int main()
 					{
 						.width = render_width,
 						.height = render_height,
-						.format = DXGI_FORMAT_R8G8B8A8_UNORM,
+						.format = swap_chain_format,
 						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 						.resource_state = D3D12_RESOURCE_STATE_COPY_SOURCE,
 					});
@@ -1003,14 +1105,22 @@ int main()
 				},
 			});
 
-			// Add connection
 			render_graph.AddEdge(RenderGraphEdge
 			{
 				.incoming_node = "visibility",
 				.incoming_resource = "color",
+				.outgoing_node = "visbuffer_debug",
+				.outgoing_resource = "input",
+			});
+
+			render_graph.AddEdge(RenderGraphEdge
+			{
+				.incoming_node = "visbuffer_debug",
+				.incoming_resource = "output",
 				.outgoing_node = "copy_to_backbuffer",
 				.outgoing_resource = "input",
 			});
+
 
 			// Add connection with no resources
 			render_graph.AddEdge(RenderGraphEdge
@@ -1021,9 +1131,7 @@ int main()
 				.outgoing_resource = STL_IMPL::nullopt,
 			});
 
-			// Execute the render graph
-			render_graph.Execute();
-			// Prevent graph from being cleaned up until the frame is done presenting
+			// Execute the render graph and prevent it from being cleaned up until the frame is done presenting
 			frame_data.register_graph(move(render_graph));
 			// Potentially wait for a frame to free up
 			frame_data.wait_for_previous_frame(command_queue);

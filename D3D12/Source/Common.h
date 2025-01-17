@@ -1,5 +1,10 @@
 #pragma once
 
+// Fast hash Map
+#include "Ankerl/unordered_dense.h"
+template<typename Key, typename Value>
+using HashMap = ankerl::unordered_dense::map<Key, Value>;
+
 #include <cassert>
 
 #define WIN32_LEAN_AND_MEAN

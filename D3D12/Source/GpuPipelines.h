@@ -173,8 +173,8 @@ struct GraphicsPipelineBuilder
 
 	ComPtr<ID3D12PipelineState> build(ComPtr<ID3D12Device> device)
 	{
-		assert(vertex_shader && pixel_shader);
 		assert(pso_desc.pRootSignature != nullptr);
+		assert(vertex_shader && pixel_shader);
 		assert(pso_desc.VS.pShaderBytecode != nullptr);
 		assert(pso_desc.PS.pShaderBytecode != nullptr);
 
@@ -210,6 +210,62 @@ struct GraphicsPipelineBuilder
 
 		ComPtr<ID3D12PipelineState> out_pipeline_state;
 		HR_CHECK(device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&out_pipeline_state)));
+		if (!debug_name.empty())
+		{
+			out_pipeline_state->SetName(debug_name.c_str());
+		}
+		return out_pipeline_state;
+	}
+};
+
+struct ComputePipelineBuilder
+{
+	D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc;
+
+	optional<CompiledShader> compute_shader;
+
+	wstring debug_name;
+
+	ComputePipelineBuilder()
+	{
+		pso_desc = {};
+		pso_desc.NodeMask = 0; // For single GPU operation, set this to zero
+		pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+	}
+
+	ComputePipelineBuilder& with_root_signature(const ComPtr<ID3D12RootSignature> in_root_signature)
+	{
+		pso_desc.pRootSignature = in_root_signature.Get();
+		return *this;
+	}
+
+	ComputePipelineBuilder& with_cs(const CompiledShader& in_shader)
+	{
+		compute_shader = in_shader;
+		pso_desc.CS.pShaderBytecode = compute_shader->blob->GetBufferPointer();
+		pso_desc.CS.BytecodeLength = compute_shader->blob->GetBufferSize();
+		return *this;
+	}
+
+	ComputePipelineBuilder& with_debug_name(wstring in_debug_name)
+	{
+		debug_name = in_debug_name;
+		return *this;
+	}
+
+	ComPtr<ID3D12PipelineState> build(ComPtr<ID3D12Device> device)
+	{
+		assert(pso_desc.pRootSignature != nullptr);
+		assert(compute_shader);
+		assert(pso_desc.CS.pShaderBytecode != nullptr);
+
+		ComPtr<ID3D12ShaderReflection> compute_shader_reflection = compute_shader->reflection;
+
+		D3D12_SHADER_DESC compute_shader_desc;
+		HR_CHECK(compute_shader_reflection->GetDesc(&compute_shader_desc));
+
+		ComPtr<ID3D12PipelineState> out_pipeline_state;
+		HR_CHECK(device->CreateComputePipelineState(&pso_desc, IID_PPV_ARGS(&out_pipeline_state)));
 		if (!debug_name.empty())
 		{
 			out_pipeline_state->SetName(debug_name.c_str());
