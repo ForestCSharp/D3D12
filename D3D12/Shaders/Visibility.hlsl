@@ -15,14 +15,7 @@ struct PsInput
     float4 position : SV_POSITION;
 	nointerpolation uint instance_id: TEXCOORD0;
 	nointerpolation uint triangle_id: TEXCOORD1;
-
-	//float3 normal : NORMAL;
-	//float3 color : COLOR;
-	//float2 texcoord : TEXCOORD;
-	//float3 world_position : TEXCOORD1;
 };
-
-//FCS TODO: Just Output 
 
 PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
 {
@@ -44,39 +37,18 @@ PsInput VertexShader(uint vertex_id : SV_VertexID, uint instance_id : SV_Instanc
 	ps_input.instance_id = draw_constants.instance_id;
 	ps_input.triangle_id = vertex_id / 3;
 
- 	//ps_input.normal = world_normal.xyz;
-	//ps_input.color = vertex.color;
-	//ps_input.texcoord = vertex.texcoord;
-	//ps_input.world_position = world_position.xyz;
-
     return ps_input;
 }
 
-#define NUM_INSTANCE_COLORS 12
-
-float4 PixelShader(const PsInput input) : SV_TARGET
+struct PixelOut
 {
-	//float4 instance_colors[NUM_INSTANCE_COLORS] = 
-	//{
-	//	float4(1,0,0,1),
-	//	float4(0,1,0,1),
-	//	float4(0,0,1,1),
-	//	float4(1,1,0,1),
-	//	float4(1,0,1,1),
-	//	float4(0,1,1,1),
-	//	float4(0.5, 0, 0, 1),
-	//	float4(0, 0.5, 0, 1),
-	//	float4(0, 0, 0.5, 1),
-	//	float4(0.5, 0.5, 0, 1),
-	//	float4(0.5, 0, 0.5, 1),
-	//	float4(0, 0.5, 0.5, 1)
-	//};
+	uint2 visbuffer;
+};
 
-	//float4 out_color = instance_colors[input.instance_id % NUM_INSTANCE_COLORS];
-	//float4 out_color = instance_colors[input.triangle_id % NUM_INSTANCE_COLORS];
-
-	float4 out_color = float4(0,0,0,1);
-	out_color.r = input.instance_id;
-	out_color.g = input.triangle_id;
-	return out_color;
+PixelOut PixelShader(const PsInput input) : SV_TARGET
+{
+	PixelOut out_value;
+	out_value.visbuffer[0] = input.instance_id;
+	out_value.visbuffer[1] = input.triangle_id;
+	return out_value;
 }

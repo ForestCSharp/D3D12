@@ -518,7 +518,6 @@ int main()
 		octree_extents, 
 		octree_depth
 	);
-	//FCS TODO: use octree_leaf_nodes for debug vis
 
 	UVSphere uv_sphere(UVSphereDesc{
 		.device = device,
@@ -716,7 +715,7 @@ int main()
 			Matrix::CreateRotationX((float)Constants::PI * 0.5f),
 		};
 
-		const size_t gltf_scene_index = 0;
+		const size_t gltf_scene_index = 1;
 
 		GltfInitData gltf_init_data = {
 			.file = gltf_files[gltf_scene_index],
@@ -871,11 +870,12 @@ int main()
 			});
 
 			const DXGI_FORMAT swap_chain_format = frame_data.swap_chain_format;
+			const DXGI_FORMAT visbuffer_format = DXGI_FORMAT_R32G32_UINT;
 
-			const D3D12_CLEAR_VALUE clear_color =
+			const D3D12_CLEAR_VALUE visbuffer_clear_value =
 			{
-				.Format = swap_chain_format,
-				.Color = { 0.39f, 0.58f, 0.93f, 1.0f },
+				.Format = visbuffer_format,
+				.Color = { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX },
 			};
 
 			const DXGI_FORMAT depth_format = DXGI_FORMAT_D32_FLOAT;
@@ -897,7 +897,7 @@ int main()
 				.with_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
 				.with_depth_enabled(true)
 				.with_dsv_format(depth_format)
-				.with_rtv_formats({ swap_chain_format })
+				.with_rtv_formats({ visbuffer_format })
 				.with_debug_name(L"visibility_pso")
 				.build(device);
 
@@ -927,8 +927,6 @@ int main()
 
 			// 2. Node to convert visbuffer to color output for debugging
 
-			const DXGI_FORMAT visbuffer_format = DXGI_FORMAT_R32G32_UINT;
-
 			// Add some nodes
 			render_graph.AddNode(RenderGraphNodeDesc
 			{
@@ -939,10 +937,10 @@ int main()
 					{
 						.width = render_width,
 						.height = render_height,
-						.format = swap_chain_format,
+						.format = visbuffer_format,
 						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 						.resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET,
-						.optimized_clear_value = clear_color,
+						.optimized_clear_value = visbuffer_clear_value,
 						.bindless = true,
 					});
 
@@ -968,7 +966,7 @@ int main()
 					D3D12_CPU_DESCRIPTOR_HANDLE& depth_handle = depth_output.GetDsvHandle(device);
 
 					command_list->OMSetRenderTargets(1, &rtv_handle, FALSE, &depth_handle);
-					command_list->ClearRenderTargetView(rtv_handle, clear_color.Color, 0, nullptr);
+					command_list->ClearRenderTargetView(rtv_handle, visbuffer_clear_value.Color, 0, nullptr);
 					command_list->ClearDepthStencilView(depth_handle, D3D12_CLEAR_FLAG_DEPTH, clear_depth.DepthStencil.Depth, 0, 0, nullptr);
 					command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -1031,7 +1029,7 @@ int main()
 					{
 						.width = render_width,
 						.height = render_height,
-						.format = swap_chain_format,
+						.format = visbuffer_format,
 						.resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 						.resource_state = D3D12_RESOURCE_STATE_GENERIC_READ,
 						.bindless = true,
@@ -1052,16 +1050,23 @@ int main()
 					RenderGraphInput& input = self.GetInput("input");
 					RenderGraphOutput& output = self.GetOutput("output");
 
+					UINT32 num_instances = 0;
+					if (optional<GltfScene> gltf_scene = gltf_task_result.get())
+					{
+						num_instances = static_cast<UINT32>(gltf_scene->instances_array.size());
+					}
+
+					command_list->SetComputeRootSignature(global_root_signature.Get());
 					command_list->SetDescriptorHeaps(1, bindless_resource_manager.GetDescriptorHeap().GetAddressOf());
 					command_list->SetComputeRootConstantBufferView(0, global_constant_buffers[frame_data.current_backbuffer_index].GetGPUVirtualAddress());
-					command_list->SetComputeRootSignature(global_root_signature.Get());
-					uint32_t constants[2] =
+					uint32_t constants[3] =
 					{
 						input.GetBindlessResourceIndex(),
 						output.GetBindlessResourceIndex(),
+						num_instances,
 					};
 					command_list->SetPipelineState(visibility_debug_pso.Get());
-					command_list->SetComputeRoot32BitConstants(1, 2, constants, 0);
+					command_list->SetComputeRoot32BitConstants(1, std::size(constants), constants, 0);
 					command_list->Dispatch(render_width, render_height, 1);
 				},
 			});

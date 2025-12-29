@@ -428,7 +428,7 @@ protected:
 		}
 		assert(descriptor_index_to_use < NUM_BINDLESS_DESCRIPTORS_PER_TYPE);
 
-		printf("Allocation Descriptor: %u, m_num_descriptors_allocated: %u\n", descriptor_index_to_use, m_num_descriptors_allocated);
+		//printf("Allocating Descriptor: %u, m_num_descriptors_allocated: %u\n", descriptor_index_to_use, m_num_descriptors_allocated);
 
 		D3D12_CPU_DESCRIPTOR_HANDLE descriptor_handle = m_descriptor_heap->GetCPUDescriptorHandleForHeapStart();
 		INT64 cpu_descriptor_heap_offset = INT64(descriptor_index_to_use) * INT64(m_descriptor_size);
